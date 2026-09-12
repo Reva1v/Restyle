@@ -18,8 +18,8 @@ const PRO_HOST: &str = "https://api.deepl.com";
 /// Хост по виду ключа: у бесплатных аккаунтов ключ оканчивается на `:fx`.
 /// `RESTYLE_DEEPL_BASE_URL` — мок в тестах.
 fn base_url(key: &str) -> String {
-    if let Ok(url) = std::env::var("RESTYLE_DEEPL_BASE_URL") {
-        return url.trim_end_matches('/').to_string();
+    if let Some(url) = crate::ai::base_url_override("RESTYLE_DEEPL_BASE_URL") {
+        return url;
     }
     if key.trim_end().ends_with(":fx") { FREE_HOST.into() } else { PRO_HOST.into() }
 }

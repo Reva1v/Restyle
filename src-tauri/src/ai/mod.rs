@@ -109,8 +109,50 @@ impl AiError {
         } else if e.is_body() || e.is_decode() {
             AiError::Network
         } else {
-            AiError::Other(e.to_string())
+            // URL из текста ошибки вырезаем: в нём могут быть параметры запроса.
+            let mut msg = e.to_string();
+            if let Some(url) = e.url() {
+                msg = msg.replace(url.as_str(), "<url>");
+            }
+            AiError::Other(msg)
         }
+    }
+}
+
+/// Подмена адреса API из переменной окружения (мок в тестах и замерах).
+/// В релизной сборке — только на локальный адрес: иначе переменная окружения
+/// могла бы увести ключ на чужой хост.
+pub fn base_url_override(var: &str) -> Option<String> {
+    let url = std::env::var(var).ok()?.trim().trim_end_matches('/').to_string();
+    if url.is_empty() {
+        return None;
+    }
+    if cfg!(debug_assertions) || is_loopback_url(&url) {
+        Some(url)
+    } else {
+        eprintln!("[restyle] {var} игнорируется: в релизе разрешён только localhost");
+        None
+    }
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let rest = url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")).unwrap_or("");
+    let host = rest.split(['/', ':']).next().unwrap_or("");
+    matches!(host, "127.0.0.1" | "localhost") || rest.starts_with("[::1]")
+}
+
+#[cfg(test)]
+mod override_tests {
+    use super::is_loopback_url;
+
+    #[test]
+    fn only_loopback_hosts_pass() {
+        assert!(is_loopback_url("http://127.0.0.1:8765"));
+        assert!(is_loopback_url("http://localhost:8765/v1"));
+        assert!(is_loopback_url("http://[::1]:8765"));
+        assert!(!is_loopback_url("https://evil.example.com"));
+        assert!(!is_loopback_url("http://127.0.0.1.evil.com"));
+        assert!(!is_loopback_url("http://localhost.evil.com"));
     }
 }
 

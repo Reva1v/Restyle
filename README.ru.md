@@ -10,6 +10,7 @@
 
 [English](README.md) · [Українська](README.uk.md) · **Русский**
 
+[![Download](https://img.shields.io/github/v/release/Reva1v/Restyle?label=Download&logo=github&color=e8a33d)](https://github.com/Reva1v/Restyle/releases/latest)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-windows--rs%200.58-000000?logo=rust&logoColor=white)
@@ -54,8 +55,8 @@
 
 ## Установка
 
-Готовый установщик собирается командой `pnpm tauri build` в
-`src-tauri/target/release/bundle/msi/` (английская и русская версии MSI).
+Скачайте свежий установщик из **[Releases](https://github.com/Reva1v/Restyle/releases/latest)** — `Restyle_x.y.z_x64_en-US.msi` или `…_ru-RU.msi` — и запустите его.
+Чтобы собрать самому, `pnpm tauri build` кладёт оба MSI в `src-tauri/target/release/bundle/msi/`.
 При первом запуске мастер попросит ключ [Gemini API](https://aistudio.google.com/apikey),
 покажет хоткеи и проверит, что хук клавиатуры и чтение полей работают.
 
@@ -68,6 +69,8 @@
 - Менеджеры паролей и банковские клиенты по умолчанию в списке «никогда не снимать экран»; поля паролей не читаются вовсе.
 - В IDE и редакторах по умолчанию берётся только выделение — документ целиком никуда не уходит.
 - Буфер обмена восстанавливается сразу после чтения и после вставки.
+- Текст (и скриншот, если включён) уходит в Google Gemini; стили-переводы отправляют текст в DeepL. Больше ничего с компьютера не уходит.
+- История живёт в памяти; на диске (`history.json`, обычный JSON) — только если включить.
 
 ## Сборка из исходников
 

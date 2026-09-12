@@ -44,9 +44,7 @@ impl Gemini {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("reqwest client");
-        let base_url = std::env::var("RESTYLE_GEMINI_BASE_URL")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
+        let base_url = super::base_url_override("RESTYLE_GEMINI_BASE_URL")
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self { client, base_url: base_url.trim_end_matches('/').to_string() }
     }
@@ -54,8 +52,16 @@ impl Gemini {
     /// Каталог моделей ключа: `GET /models`. Ключи видят разный набор (2.5
     /// новым ключам недоступна), поэтому список тянем у API, а не хардкодим.
     pub async fn list_models(&self, key: &str) -> Result<Vec<ModelInfo>, AiError> {
-        let url = format!("{}/models?pageSize=200&key={key}", self.base_url);
-        let resp = self.client.get(url).send().await.map_err(|e| AiError::from_reqwest(&e))?;
+        // Ключ — заголовком, не в URL: текст ошибки reqwest содержит URL целиком
+        // и уходил бы в интерфейс и логи.
+        let url = format!("{}/models?pageSize=200", self.base_url);
+        let resp = self
+            .client
+            .get(url)
+            .header("x-goog-api-key", key)
+            .send()
+            .await
+            .map_err(|e| AiError::from_reqwest(&e))?;
         let status = resp.status().as_u16();
         let body = resp.text().await.map_err(|e| AiError::from_reqwest(&e))?;
         if status != 200 {

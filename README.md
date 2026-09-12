@@ -10,6 +10,7 @@ Hotkey → style → the new text replaces the original. The model gets context 
 
 **English** · [Українська](README.uk.md) · [Русский](README.ru.md)
 
+[![Download](https://img.shields.io/github/v/release/Reva1v/Restyle?label=Download&logo=github&color=e8a33d)](https://github.com/Reva1v/Restyle/releases/latest)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![Tauri 2](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)
 ![Rust](https://img.shields.io/badge/Rust-windows--rs%200.58-000000?logo=rust&logoColor=white)
@@ -54,8 +55,8 @@ The panel never steals focus: text is pasted where your caret stayed. If the win
 
 ## Installation
 
-`pnpm tauri build` produces the installer in
-`src-tauri/target/release/bundle/msi/` (English and Russian MSI).
+Download the latest installer from **[Releases](https://github.com/Reva1v/Restyle/releases/latest)** — `Restyle_x.y.z_x64_en-US.msi` or `…_ru-RU.msi` — and run it.
+To build it yourself, `pnpm tauri build` puts both MSI files into `src-tauri/target/release/bundle/msi/`.
 On first launch a wizard asks for a [Gemini API key](https://aistudio.google.com/apikey),
 shows the shortcuts and checks that the keyboard hook and field reading work.
 
@@ -68,6 +69,8 @@ shows the shortcuts and checks that the keyboard hook and field reading work.
 - Password managers and banking apps are excluded from screenshots by default; password fields are never read.
 - In IDEs and editors only the selection is taken by default — the whole document never leaves your machine.
 - The clipboard is restored right after reading and after pasting.
+- Text (and the screenshot, if enabled) goes to Google Gemini; translation styles send text to DeepL. Nothing else leaves the machine.
+- History is kept in memory; on disk (`history.json`, plain JSON) only if you turn it on.
 
 ## Building from source
 

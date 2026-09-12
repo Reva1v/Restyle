@@ -13,7 +13,7 @@ Windows-приложение (10 20H2+ / 11): пользователь печа�
 жмёт хоткей — приложение забирает текст (UIA / клипборд), делает снимок экрана
 как контекст, отправляет в Gemini с выбранным стилем и подставляет результат на
 место исходного. Полное ТЗ — в стартовом промпте сессии; этот файл фиксирует
-принятые решения. Соседний проект-донор: `C:\Users\Reva1v\IdeaProjects\HoldMix`
+принятые решения. Соседний проект-донор: HoldMix
 (тот же стек; оттуда взяты hotkey-поток, окно без кражи фокуса, трей, настройки).
 
 ## Стек (зафиксирован, не менять молча)
@@ -103,7 +103,8 @@ Git-коммиты — всегда на английском (глобальн�
    `AiError::user_message()` (401/403/400 API_KEY_INVALID → «Проверь API-ключ»,
    429 → «Лимит запросов», сеть → «Нет соединения»). Системный промпт —
    `prompts/system.txt` (include_str!), override без пересборки —
-   `<config>/system_prompt.txt`. `RESTYLE_GEMINI_BASE_URL` — прокси/мок
+   `<config>/system_prompt.txt`. `RESTYLE_GEMINI_BASE_URL` — прокси/мок (в релизе только localhost, см. `ai::base_url_override`;
+   `RESTYLE_DUMP_SCREENSHOT` — только debug)
    (`scripts/mock_gemini.py`: режимы по ключу `bad-key`/`rate`/`slow`).
    Генерация в control-цикле: `Session.wanted_style` + `maybe_start_generation`
    ждёт текст и решённый скриншот (Encoding → ждём `ScreenshotReady`), затем

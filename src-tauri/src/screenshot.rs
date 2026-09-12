@@ -223,7 +223,8 @@ pub fn encode(raw: RawShot) -> Result<Encoded, String> {
         (t_swap - t_resize).as_secs_f64() * 1000.0,
         (t_jpeg - t_swap).as_secs_f64() * 1000.0
     );
-    if let Some(path) = std::env::var_os("RESTYLE_DUMP_SCREENSHOT") {
+    // Только отладочная сборка: в релизе снимок экрана не должен попадать на диск.
+    if let Some(path) = std::env::var_os("RESTYLE_DUMP_SCREENSHOT").filter(|_| cfg!(debug_assertions)) {
         if let Err(e) = std::fs::write(&path, &buf) {
             eprintln!("[restyle] dump screenshot: {e}");
         }
