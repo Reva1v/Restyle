@@ -1,0 +1,17 @@
+# Dependencies / build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Generated TS bindings (ts-rs, regenerate with `cargo test --lib -- export_bindings`)
+src/bindings/
+
+# IDE / tooling
+/.idea/
+/.claude/
+*.iml
+
+# Misc
+*.local
+.DS_Store

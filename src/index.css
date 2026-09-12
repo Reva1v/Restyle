@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Оверлей: прозрачный html/body, фон даёт акрил окна; CSS-фолбэк — полупрозрачный тёмный. */
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  font-family: system-ui, "Segoe UI", sans-serif;
+  user-select: none;
+  overflow: hidden;
+}
+
+:root[data-theme="light"] #root {
+  color: #111;
+}
+
+/* Окно настроек, в отличие от оверлея, длинное и с полями ввода:
+   ему нужны прокрутка, выделение текста и непрозрачный фон. */
+html.settings-window,
+html.settings-window body,
+html.settings-window #root {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+  user-select: text;
+  background: #171717;
+}
+
+html.settings-window {
+  overflow-y: auto;
+}
