@@ -6,7 +6,8 @@
 
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_WINDOW_CORNER_PREFERENCE,
+    DWMWCP_DONOTROUND, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
@@ -18,9 +19,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 /// Логический размер оверлея (умножается на DPI-масштаб монитора).
-/// Должен совпадать с `app.windows[overlay]` в tauri.conf.json.
-pub const PANEL_W: f32 = 480.0;
-pub const PANEL_H: f32 = 400.0;
+/// Ширина — из макета (HUD ровно 520 px). Высота динамическая: содержимое
+/// меряет себя во фронтенде и присылает `resize_overlay`, окно подгоняется —
+/// иначе акрил окна торчал бы пустым прямоугольником под HUD.
+/// `PANEL_H` — стартовое значение до первого замера (= tauri.conf.json).
+pub const PANEL_W: f32 = 520.0;
+pub const PANEL_H: f32 = 148.0;
+/// Границы для присланной фронтендом высоты.
+pub const PANEL_H_MIN: f32 = 56.0;
+pub const PANEL_H_MAX: f32 = 720.0;
 /// Логический сдвиг панели от курсора.
 pub const CURSOR_OFFSET: f32 = 16.0;
 
@@ -109,6 +116,29 @@ pub fn apply_overlay_styles(raw: isize) {
     apply_rounded_corners(raw);
 }
 
+/// Прозрачный оверлей без системной рамки и скругления: Windows 11 обводит
+/// скруглённое окно тонкой рамкой, и у кольца удержания (46×46) она торчала
+/// квадратным контуром вокруг кружка. Углы панели и тоста рисует CSS.
+pub fn clear_dwm_frame(raw: isize) {
+    unsafe {
+        let h = hwnd(raw);
+        let corner = DWMWCP_DONOTROUND;
+        let _ = DwmSetWindowAttribute(
+            h,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &corner as *const _ as *const core::ffi::c_void,
+            size_of_val(&corner) as u32,
+        );
+        let none = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(
+            h,
+            DWMWA_BORDER_COLOR,
+            &none as *const _ as *const core::ffi::c_void,
+            size_of_val(&none) as u32,
+        );
+    }
+}
+
 /// Скруглённые углы DWM для окон без системного титлбара
 /// (`decorations: false` сам по себе на Win11 их не даёт).
 /// На Win10 атрибут не поддержан — игнорируем, углы даёт CSS.
@@ -131,6 +161,76 @@ pub fn show_at(raw: isize, x: i32, y: i32, w: i32, h: i32) {
         let hw = hwnd(raw);
         let _ = SetWindowPos(hw, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
         let _ = ShowWindow(hw, SW_SHOWNA);
+    }
+}
+
+/// Вывести окно на передний план по-настоящему. Меню трея не активируется
+/// (`WS_EX_NOACTIVATE`), поэтому в момент клика по «Настройкам» наш процесс не
+/// в фокусе, и Windows запрещает ему `SetForegroundWindow`: окно открывалось
+/// под другими приложениями и только мигало на панели задач. Обход — на время
+/// подцепить ввод к потоку текущего переднего окна и дёрнуть z-order через
+/// TOPMOST → NOTOPMOST.
+pub fn force_foreground(raw: isize) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_RESTORE,
+    };
+    unsafe {
+        let target = hwnd(raw);
+        let fg = GetForegroundWindow();
+        let me = GetCurrentThreadId();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
+        let _ = ShowWindow(target, SW_RESTORE);
+        let _ = SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        let _ = BringWindowToTop(target);
+        let _ = SetForegroundWindow(target);
+        if attached {
+            let _ = AttachThreadInput(me, fg_thread, false);
+        }
+    }
+}
+
+/// Какие кириллические раскладки установлены: (русская, украинская).
+pub fn installed_cyrillic() -> (bool, bool) {
+    let langs = layout_langs();
+    (langs.contains(&0x19), langs.contains(&0x22))
+}
+
+fn layout_langs() -> Vec<(u16, isize)> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayoutList, HKL};
+    let mut list = [HKL::default(); 32];
+    let n = unsafe { GetKeyboardLayoutList(Some(&mut list)) }.clamp(0, 32) as usize;
+    list[..n].iter().map(|h| ((h.0 as usize & 0x3FF) as u16, h.0 as isize)).collect()
+}
+
+trait HasLang {
+    fn contains(&self, lang: &u16) -> bool;
+}
+impl HasLang for Vec<(u16, isize)> {
+    fn contains(&self, lang: &u16) -> bool {
+        self.iter().any(|(l, _)| l == lang)
+    }
+}
+
+/// Переключить раскладку окна на язык `primary_lang` (PRIMARYLANGID), если
+/// такая установлена: после исправления текста печатать дальше в нужной.
+pub fn switch_layout(raw: isize, primary_lang: u16) {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_INPUTLANGCHANGEREQUEST};
+    if let Some((_, hkl)) = layout_langs().into_iter().find(|(l, _)| *l == primary_lang) {
+        unsafe {
+            let _ = PostMessageW(hwnd(raw), WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(hkl));
+        }
+    }
+}
+
+/// Подгон размера/позиции уже показанного окна — без активации и без Z-order.
+pub fn move_to(raw: isize, x: i32, y: i32, w: i32, h: i32) {
+    unsafe {
+        let _ = SetWindowPos(hwnd(raw), HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
     }
 }
 

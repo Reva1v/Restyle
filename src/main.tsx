@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import { commands, events } from "./lib/ipc";
+import { applyAccent } from "./lib/theme";
 import "./index.css";
 
 // Оверлей: отключаем контекстное меню WebView, чтобы не всплывало поверх панели.
@@ -13,16 +14,17 @@ let theme = "system";
 function applyTheme() {
   const dark = theme === "system" ? mq.matches : theme !== "light";
   document.documentElement.dataset.theme = dark ? "dark" : "light";
-  void commands.setOverlayTint(dark);
 }
 mq.addEventListener("change", () => theme === "system" && applyTheme());
 void commands.getSettings().then((s) => {
   theme = s.theme;
   applyTheme();
+  applyAccent(s.accent);
 });
 void events.onSettingsChanged((s) => {
   theme = s.theme;
   applyTheme();
+  applyAccent(s.accent);
 });
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

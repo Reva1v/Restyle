@@ -15,6 +15,10 @@ export function vkName(vk: number): string {
 
 export function comboLabel(c: HotkeyCombo | null | undefined): string {
   if (!c) return "—";
+  if (c.double) {
+    const m = c.ctrl ? "Ctrl" : c.alt ? "Alt" : c.shift ? "Shift" : "Win";
+    return `${m} + ${m}`;
+  }
   const parts: string[] = [];
   if (c.ctrl) parts.push("Ctrl");
   if (c.alt) parts.push("Alt");
@@ -39,6 +43,12 @@ export function codeToVk(e: KeyboardEvent): number | null {
   return map[code] ?? null;
 }
 
+/** Пустая комбинация → null (поле показывает «Нажмите, чтобы назначить»).
+ * «Ctrl, Ctrl» без основной клавиши — не пустая: у неё `double`. */
+export function comboOrNull(c: HotkeyCombo): HotkeyCombo | null {
+  return c.key === 0 && c.extraKeys.length === 0 && !c.double ? null : c;
+}
+
 export const EMPTY_COMBO: HotkeyCombo = {
-  ctrl: false, alt: false, shift: false, win: false, key: 0, extraKeys: [],
+  ctrl: false, alt: false, shift: false, win: false, key: 0, extraKeys: [], double: false,
 };

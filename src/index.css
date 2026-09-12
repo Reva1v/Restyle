@@ -1,35 +1,79 @@
+
+/* IBM Plex из макета — локально, без обращений в сеть (приложение офлайновое). */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+/* Акцент по умолчанию — янтарь; остальные пресеты ставит src/lib/theme.ts. */
+:root {
+  --amber: 232 163 61;
+  --amber-soft: 244 198 126;
+  --amber-deep: 200 130 31;
+  --amber-ink: 138 90 17;
+  --amber-mid: 169 108 20;
+  --amber-on: 26 18 6;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* Оверлей: прозрачный html/body, фон даёт акрил окна; CSS-фолбэк — полупрозрачный тёмный. */
+/* Оверлей: прозрачный html/body, фон даёт акрил окна; CSS-фолбэк — полупрозрачный. */
 html,
 body,
 #root {
   margin: 0;
   height: 100%;
   background: transparent;
-  font-family: system-ui, "Segoe UI", sans-serif;
+  font-family: "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
   user-select: none;
   overflow: hidden;
 }
 
-:root[data-theme="light"] #root {
-  color: #111;
-}
-
-/* Окно настроек, в отличие от оверлея, длинное и с полями ввода:
-   ему нужны прокрутка, выделение текста и непрозрачный фон. */
-html.settings-window,
-html.settings-window body,
-html.settings-window #root {
-  height: auto;
-  min-height: 100%;
-  overflow: visible;
+/* Обычные окна (настройки, история, мастер): свой непрозрачный фон, прокрутка,
+   выделение текста. Тема — атрибут `data-theme` на <html>. */
+html.app-window,
+html.app-window body,
+html.app-window #root {
+  height: 100%;
+  overflow: hidden;
   user-select: text;
-  background: #171717;
+  background: #f4f2ef;
 }
 
-html.settings-window {
-  overflow-y: auto;
+html.app-window[data-theme="dark"],
+html.app-window[data-theme="dark"] body,
+html.app-window[data-theme="dark"] #root {
+  background: #17181c;
+}
+
+/* Скроллбары под тему — системные в тёмном окне выглядят инородно. */
+.app-window ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.app-window ::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.app-window[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  background-clip: content-box;
+}
+.app-window ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Ввод не должен наследовать системный шрифт */
+input,
+textarea,
+select,
+button {
+  font-family: inherit;
 }

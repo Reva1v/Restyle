@@ -29,6 +29,18 @@ pub fn system_prompt(config_dir: Option<std::path::PathBuf>) -> String {
         .unwrap_or_else(|| DEFAULT_SYSTEM_PROMPT.trim().to_string())
 }
 
+/// Модель из каталога провайдера (окно настроек).
+#[derive(Clone, Debug, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct ModelInfo {
+    /// Имя для API (`gemini-3.5-flash-lite`).
+    pub id: String,
+    pub display_name: String,
+    /// «Быстрая» модель (flash/lite) — их и стоит выбирать для переписывания.
+    pub fast: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct RewriteRequest {
     pub system_prompt: String,

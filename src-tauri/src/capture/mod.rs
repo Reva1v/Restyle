@@ -48,7 +48,19 @@ pub struct Captured {
     pub uia_writable: bool,
     /// Взято выделение (режим «только выделение»), а не всё поле.
     pub selection_only: bool,
+    /// Выделение/каретка внутри прочитанного поля (только UIA).
+    pub selection: Option<Selection>,
     pub elapsed: Duration,
+}
+
+/// Выделение в поле: текст и начало — в символах нормализованного `text`;
+/// `uia_start`/`uia_len` — те же границы в единицах UIA для возврата каретки.
+#[derive(Clone, Debug)]
+pub struct Selection {
+    pub text: String,
+    pub start_chars: usize,
+    pub uia_start: i32,
+    pub uia_len: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -75,6 +87,11 @@ pub struct PasteOptions {
     pub prefer_uia: bool,
     /// Только Ctrl+V (выделение в приложении ещё активно), без Ctrl+A.
     pub select_only: bool,
+    /// Вернуть прежнее содержимое буфера после вставки (настройка
+    /// `restoreClipboard`; по умолчанию включено).
+    pub restore_clipboard: bool,
+    /// Вернуть выделение/каретку (единицы UIA) — длина текста не менялась.
+    pub caret: Option<(i32, i32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +167,12 @@ impl Worker {
                             source: TextSource::Uia,
                             uia_writable: t.writable,
                             selection_only: t.selection_only,
+                            selection: t.selection.map(|s| Selection {
+                                start_chars: normalize_newlines(&s.prefix).chars().count(),
+                                text: normalize_newlines(&s.text),
+                                uia_start: s.start,
+                                uia_len: s.len,
+                            }),
                             elapsed: t0.elapsed(),
                         });
                     }
@@ -170,6 +193,7 @@ impl Worker {
             source: TextSource::Clipboard,
             uia_writable: false,
             selection_only: opts.select_only,
+            selection: None,
             elapsed: t0.elapsed(),
         })
     }
@@ -212,7 +236,12 @@ impl Worker {
     fn paste(&self, text: &str, opts: PasteOptions) -> PasteResult {
         if opts.prefer_uia {
             match uia::write(text) {
-                Ok(true) => return Ok(PasteMethod::Uia),
+                Ok(true) => {
+                    if let Some((start, len)) = opts.caret {
+                        uia::select_range(start, len);
+                    }
+                    return Ok(PasteMethod::Uia);
+                }
                 Ok(false) => eprintln!("[restyle] paste: UIA SetValue недоступен — клипборд"),
                 Err(e) => eprintln!("[restyle] paste: UIA SetValue: {e:?} — клипборд"),
             }
@@ -225,6 +254,14 @@ impl Worker {
         }
         input::chord(input::VK_CONTROL, input::VK_V);
         std::thread::sleep(PASTE_SETTLE);
+        if let Some((start, len)) = opts.caret {
+            uia::select_range(start, len);
+        }
+        if !opts.restore_clipboard {
+            // Пользователь сам выключил возврат буфера — оставляем результат в нём.
+            input::assert_modifiers_released();
+            return Ok(PasteMethod::Clipboard);
+        }
         let restored = clipboard::restore(self.hwnd, &snap);
         input::assert_modifiers_released();
         restored.map_err(|e| format!("клипборд не восстановлен: {e}"))?;

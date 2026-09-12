@@ -9,8 +9,9 @@ use windows::Win32::Foundation::BOOL;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationValuePattern, UIA_DocumentControlTypeId, UIA_EditControlTypeId,
-    UIA_TextPatternId, UIA_ValuePatternId,
+    IUIAutomationValuePattern, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
+    TextUnit_Character, UIA_DocumentControlTypeId, UIA_EditControlTypeId, UIA_TextPatternId,
+    UIA_ValuePatternId,
 };
 
 thread_local! {
@@ -29,6 +30,85 @@ pub struct UiaText {
     pub writable: bool,
     /// Взято текущее выделение, а не весь текст (режим «только выделение»).
     pub selection_only: bool,
+    /// Выделение/каретка внутри поля (TextPattern), если элемент его отдаёт.
+    pub selection: Option<UiaSel>,
+}
+
+/// Выделение в поле: текст, всё, что до него, и смещения в единицах UIA
+/// (UTF-16) — чтобы после вставки вернуть каретку на место.
+#[derive(Debug, Clone)]
+pub struct UiaSel {
+    pub text: String,
+    pub prefix: String,
+    pub start: i32,
+    pub len: i32,
+}
+
+unsafe fn selection_of(tp: &IUIAutomationTextPattern) -> Option<UiaSel> {
+    let sel = tp.GetSelection().ok()?;
+    if sel.Length().ok()? < 1 {
+        return None;
+    }
+    let r = sel.GetElement(0).ok()?;
+    let pre = tp.DocumentRange().ok()?;
+    pre.MoveEndpointByRange(TextPatternRangeEndpoint_End, &r, TextPatternRangeEndpoint_Start).ok()?;
+    let prefix = pre.GetText(-1).ok()?.to_string();
+    let text = r.GetText(-1).ok()?.to_string();
+    Some(UiaSel {
+        start: prefix.encode_utf16().count() as i32,
+        len: text.encode_utf16().count() as i32,
+        text,
+        prefix,
+    })
+}
+
+/// Выделить `len` символов с `start` в элементе последнего чтения (0 — просто
+/// каретка). `false` — у элемента нет TextPattern или он не дал выделить.
+pub fn select_range(start: i32, len: i32) -> bool {
+    LAST_ELEMENT.with_borrow(|l| {
+        let Some(el) = l else { return false };
+        unsafe {
+            let Ok(u) = el.GetCurrentPattern(UIA_TextPatternId) else { return false };
+            let Ok(tp) = u.cast::<IUIAutomationTextPattern>() else { return false };
+            let Ok(r) = tp.DocumentRange() else { return false };
+            let Ok(anchor) = r.Clone() else { return false };
+            let total = anchor
+                .GetText(-1)
+                .map(|s| s.to_string().encode_utf16().count() as i32)
+                .unwrap_or(0);
+            let from_end = (total - start - len).max(0);
+            println!("[restyle] каретка: start={start} len={len} total={total}");
+            if from_end <= start {
+                // Отмеряем от конца документа. Начало диапазона в некоторых
+                // полях (Qt) не доходит до самого конца при движении вперёд —
+                // каретка в конце текста превращалась в выделенный последний
+                // символ. Каретка в конце — вовсе без движений.
+                if r.MoveEndpointByRange(TextPatternRangeEndpoint_Start, &anchor, TextPatternRangeEndpoint_End).is_err() {
+                    return false;
+                }
+                if from_end + len > 0 {
+                    let _ = r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, -(from_end + len));
+                }
+                if from_end > 0 {
+                    let _ = r.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, -from_end);
+                }
+            } else {
+                // Свернуть в начало документа и отмерить от него.
+                if r.MoveEndpointByRange(TextPatternRangeEndpoint_End, &anchor, TextPatternRangeEndpoint_Start).is_err() {
+                    return false;
+                }
+                let _ = r.MoveEndpointByUnit(TextPatternRangeEndpoint_End, TextUnit_Character, start + len);
+                if start > 0 {
+                    let _ = r.MoveEndpointByUnit(TextPatternRangeEndpoint_Start, TextUnit_Character, start);
+                }
+                if len == 0 {
+                    // Каретка: конец диапазона — строго на начале.
+                    let _ = r.MoveEndpointByRange(TextPatternRangeEndpoint_End, &r.Clone().unwrap_or(r.clone()), TextPatternRangeEndpoint_Start);
+                }
+            }
+            r.Select().is_ok()
+        }
+    })
 }
 
 #[derive(Debug)]
@@ -89,7 +169,7 @@ impl Client {
                         s.push_str(&sel.GetElement(i)?.GetText(-1)?.to_string());
                     }
                     if !s.trim().is_empty() {
-                        return Ok(Some(UiaText { text: s, writable: false, selection_only: true }));
+                        return Ok(Some(UiaText { text: s, writable: false, selection_only: true, selection: None }));
                     }
                 }
                 return Ok(None);
@@ -99,14 +179,16 @@ impl Client {
                 if let Some(vp) = &value_pat {
                     let v = vp.CurrentValue()?.to_string();
                     if !v.trim().is_empty() {
-                        return Ok(Some(UiaText { text: v, writable, selection_only: false }));
+                        let selection = text_pat.as_ref().and_then(|tp| selection_of(tp));
+                        return Ok(Some(UiaText { text: v, writable, selection_only: false, selection }));
                     }
                 }
             }
             if let Some(tp) = &text_pat {
                 let t = tp.DocumentRange()?.GetText(-1)?.to_string();
                 if !t.trim().is_empty() {
-                    return Ok(Some(UiaText { text: t, writable, selection_only: false }));
+                    let selection = selection_of(tp);
+                    return Ok(Some(UiaText { text: t, writable, selection_only: false, selection }));
                 }
             }
             eprintln!(

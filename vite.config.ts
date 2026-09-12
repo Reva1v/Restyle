@@ -17,10 +17,14 @@ export default defineConfig({
     minify: "esbuild",
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     rollupOptions: {
-      // Две страницы: оверлей и окно настроек
+      // Страницы: оверлей, настройки, история, мастер первого запуска
       input: {
         main: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),
+        history: resolve(__dirname, "history.html"),
+        welcome: resolve(__dirname, "welcome.html"),
+        menu: resolve(__dirname, "menu.html"),
+        menu: resolve(__dirname, "menu.html"),
       },
     },
   },

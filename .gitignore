@@ -4,7 +4,7 @@ dist/
 src-tauri/target/
 src-tauri/gen/schemas/
 
-# Generated TS bindings (ts-rs, regenerate with `cargo test --lib -- export_bindings`)
+# Generated TS bindings (ts-rs, regenerate with `cd src-tauri && cargo test`)
 src/bindings/
 
 # IDE / tooling
@@ -15,3 +15,4 @@ src/bindings/
 # Misc
 *.local
 .DS_Store
+/.wolf/

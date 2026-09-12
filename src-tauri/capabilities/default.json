@@ -1,8 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Overlay + settings windows: core IPC only",
-  "windows": ["overlay", "settings"],
+  "description": "Все окна приложения: core IPC (события, перетаскивание, свои кнопки окна)",
+  "windows": [
+    "overlay",
+    "settings",
+    "history",
+    "welcome",
+    "menu"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-close",

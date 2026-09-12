@@ -28,7 +28,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINF
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
     TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG,
-    WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+    WM_MBUTTONDOWN, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 use crate::control::ControlMsg;
@@ -37,6 +38,8 @@ use combo::ComboSet;
 /// Идентификаторы комбинаций в `ComboSet`. Стили — `style:<id>`.
 pub const COMBO_MAIN: &str = "main";
 pub const COMBO_UNDO: &str = "undo";
+/// Исправить раскладку («ghbdtn» → «привет»).
+pub const COMBO_LAYOUT: &str = "layout";
 pub const COMBO_STYLE_PREFIX: &str = "style:";
 
 /// События hotkey-потока для control-цикла.
@@ -45,6 +48,9 @@ pub enum HotkeyEvent {
     /// Сработала комбинация `id` (см. константы выше); `at` — момент события
     /// в колбэке хука (точка отсчёта бюджета 100 мс до оверлея).
     Combo { id: String, at: Instant },
+    /// Комбинацию `id` отпустили. Для основной комбинации это развилка
+    /// «короткое нажатие» / «удержание»: см. `control.rs`.
+    ComboReleased { id: String },
     /// Клавиша оверлея при видимой панели (проглочена хуком): Enter/Esc/Tab/R/стрелки/1-9.
     PanelKey(u32),
 }
@@ -52,15 +58,23 @@ pub enum HotkeyEvent {
 // --- сообщения message loop hotkey-потока ---
 pub const WM_APP_REINSTALL: u32 = WM_APP + 1;
 pub const WM_APP_RELOAD_COMBOS: u32 = WM_APP + 2;
+/// Меню трея открылось/закрылось — поставить/снять хук мыши.
+pub const WM_APP_MENU: u32 = WM_APP + 3;
 
 // --- разделяемое состояние (пишет control-цикл/настройки, читает колбэк хука) ---
 static TX: OnceLock<UnboundedSender<ControlMsg>> = OnceLock::new();
 static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
 static PANEL_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Меню трея видно: ловим клик мимо и Esc.
+static MENU_VISIBLE: AtomicBool = AtomicBool::new(false);
+/// Прямоугольник меню в пикселях экрана (x, y, w, h) — клик внутри не наш.
+static MENU_RECT: std::sync::Mutex<(i32, i32, i32, i32)> = std::sync::Mutex::new((0, 0, 0, 0));
 /// Пауза распознавания (окно настроек захватывает новую комбинацию).
 static SUSPENDED: AtomicBool = AtomicBool::new(false);
 /// GetTickCount64 последнего события клавиатурного хука — для watchdog
 static LAST_HOOK_TICK: AtomicU64 = AtomicU64::new(0);
+/// Хук стоит (для мастера первого запуска и диагностики).
+static HOOK_INSTALLED: AtomicBool = AtomicBool::new(false);
 /// Комбинации (id, нормализованные VK); меняются из настроек, применяются по
 /// WM_APP_RELOAD_COMBOS.
 static COMBOS: Mutex<Vec<(String, Vec<u32>)>> = Mutex::new(Vec::new());
@@ -77,7 +91,11 @@ pub fn set_panel_visible(visible: bool) {
 }
 
 pub fn set_suspended(on: bool) {
-    SUSPENDED.store(on, Ordering::Release);
+    // Единственный способ увидеть это состояние снаружи: залипший `true`
+    // означает мёртвые хоткеи, поэтому переходы печатаем.
+    if SUSPENDED.swap(on, Ordering::AcqRel) != on {
+        println!("[restyle] хук {}", if on { "приостановлен (захват хоткея)" } else { "снова слушает" });
+    }
 }
 
 pub fn set_combos(combos: Vec<(String, Vec<u32>)>) {
@@ -146,15 +164,45 @@ unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         // Свои же SendInput (Ctrl+A/C/V в фазе 2) не должны попадать в автомат.
         if (down || up) && !injected && !SUSPENDED.load(Ordering::Acquire) {
             let vk = kb.vkCode;
-            let fired = SET.with_borrow_mut(|s| s.on_key(vk, down).map(str::to_owned));
-            if let Some(id) = fired {
-                if let Some(tx) = TX.get() {
-                    let _ = tx.send(ControlMsg::Hotkey(HotkeyEvent::Combo {
-                        id,
-                        at: Instant::now(),
-                    }));
+            let hit = SET.with_borrow_mut(|s| {
+                s.on_key_at(vk, down, kb.time as u64).map(|(id, edge)| (id.to_owned(), edge))
+            });
+            if let Some((id, edge)) = hit {
+                match edge {
+                    combo::Edge::Show => {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(ControlMsg::Hotkey(HotkeyEvent::Combo {
+                                id,
+                                at: Instant::now(),
+                            }));
+                        }
+                        // Комбинация — наша: приложению под оверлеем её не отдаём.
+                        return LRESULT(1);
+                    }
+                    // Двойное нажатие модификатора: событие, но клавишу не глотаем —
+                    // её нажатие приложение уже получило.
+                    combo::Edge::Double => {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(ControlMsg::Hotkey(HotkeyEvent::Combo {
+                                id,
+                                at: Instant::now(),
+                            }));
+                        }
+                    }
+                    combo::Edge::Hide => {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(ControlMsg::Hotkey(HotkeyEvent::ComboReleased { id }));
+                        }
+                        // Отпускание пропускаем дальше: приложение под оверлеем
+                        // уже видело down этой клавиши (его мы не глотали).
+                    }
                 }
-                // Комбинация — наша: приложению под оверлеем её не отдаём.
+            }
+            // Esc закрывает меню трея; остальные клавиши ему не нужны.
+            if down && vk == 0x1B && MENU_VISIBLE.load(Ordering::Acquire) {
+                if let Some(tx) = TX.get() {
+                    let _ = tx.send(ControlMsg::CloseTrayMenu);
+                }
                 return LRESULT(1);
             }
             // Клавиши оверлея глотаем (и down, и up), пока он виден.
@@ -171,10 +219,82 @@ unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
 }
 
+thread_local! {
+    static MOUSE_HOOK: std::cell::Cell<isize> = const { std::cell::Cell::new(0) };
+}
+
+fn install_mouse_hook() {
+    MOUSE_HOOK.with(|h| {
+        if h.get() != 0 {
+            return;
+        }
+        match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
+            Ok(hook) => h.set(hook.0 as isize),
+            Err(e) => eprintln!("[restyle] хук мыши не встал: {e}"),
+        }
+    });
+}
+
+fn uninstall_mouse_hook() {
+    MOUSE_HOOK.with(|h| {
+        let raw = h.get();
+        if raw != 0 {
+            unsafe {
+                let _ = UnhookWindowsHookEx(HHOOK(raw as *mut _));
+            }
+            h.set(0);
+        }
+    });
+}
+
+/// Клик мимо открытого меню закрывает его. Сам клик пропускаем дальше —
+/// пользователь целился в то, что под меню, а не «в пустоту».
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 && MENU_VISIBLE.load(Ordering::Acquire) {
+        let click = matches!(
+            wparam.0 as u32,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN
+        );
+        if click {
+            let pt = (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt;
+            let (x, y, w, h) = MENU_RECT.lock().map(|r| *r).unwrap_or((0, 0, 0, 0));
+            let inside = pt.x >= x && pt.x < x + w && pt.y >= y && pt.y < y + h;
+            if !inside {
+                if let Some(tx) = TX.get() {
+                    let _ = tx.send(ControlMsg::CloseTrayMenu);
+                }
+            }
+        }
+    }
+    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+}
+
+/// Меню трея открылось (`rect` — его геометрия) или закрылось.
+pub fn set_menu_visible(on: bool, rect: (i32, i32, i32, i32)) {
+    if let Ok(mut r) = MENU_RECT.lock() {
+        *r = rect;
+    }
+    MENU_VISIBLE.store(on, Ordering::Release);
+    let tid = HOOK_THREAD_ID.load(Ordering::Acquire);
+    if tid != 0 {
+        unsafe {
+            let _ = PostThreadMessageW(tid, WM_APP_MENU, WPARAM(on as usize), LPARAM(0));
+        }
+    }
+}
+
+/// Установлен ли LL-хук клавиатуры (мастер первого запуска, диагностика).
+pub fn is_installed() -> bool {
+    HOOK_INSTALLED.load(Ordering::Acquire)
+}
+
 fn install_kbd_hook() {
     unsafe {
         match SetWindowsHookExW(WH_KEYBOARD_LL, Some(kbd_proc), None, 0) {
-            Ok(h) => KBD_HOOK.set(Some(h)),
+            Ok(h) => {
+                HOOK_INSTALLED.store(true, Ordering::Release);
+                KBD_HOOK.set(Some(h))
+            }
             Err(e) => eprintln!("[restyle] SetWindowsHookExW(WH_KEYBOARD_LL) failed: {e}"),
         }
     }
@@ -220,6 +340,14 @@ pub fn spawn(tx: UnboundedSender<ControlMsg>, combos: Vec<(String, Vec<u32>)>) {
                         reload_set();
                     }
                     WM_APP_RELOAD_COMBOS => reload_set(),
+                    // Хук мыши живёт только пока открыто меню трея.
+                    WM_APP_MENU => {
+                        if msg.wParam.0 != 0 {
+                            install_mouse_hook();
+                        } else {
+                            uninstall_mouse_hook();
+                        }
+                    }
                     _ => {
                         let _ = TranslateMessage(&msg);
                         DispatchMessageW(&msg);

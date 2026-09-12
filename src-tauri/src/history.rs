@@ -10,8 +10,13 @@ use ts_rs::TS;
 
 use crate::capture::text::LineEnding;
 
+/// Значение лимита по умолчанию (настройка `historyLimit`).
 pub const MAX: usize = 20;
+/// Потолок для настройки: больше держать в памяти незачем.
+pub const HARD_MAX: usize = 100;
 /// Сколько пунктов показывать в подменю трея.
+/// Сколько записей показывает меню трея (остальное — в окне истории).
+#[allow(dead_code)] // читается фронтендом меню через `get_history`
 pub const TRAY_MAX: usize = 10;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -65,7 +70,10 @@ impl From<&HistoryEntry> for HistoryItem {
     }
 }
 
-/// Однострочное превью для пункта меню: без переводов строк, не длиннее `max`.
+/// Однострочное превью записи: без переводов строк, не длиннее `max`.
+/// Меню трея теперь рисует фронтенд, но превью остаётся чистой функцией
+/// с тестами — пригодится, когда понадобится обрезать текст на бэкенде.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn preview(text: &str, max: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = flat.chars().take(max).collect();
@@ -95,22 +103,40 @@ pub struct History {
     entries: VecDeque<HistoryEntry>,
     path: Option<PathBuf>,
     persist: bool,
+    limit: usize,
 }
 
 impl History {
     /// `path` — файл истории; читается, только если `persist`.
-    pub fn load(path: Option<PathBuf>, persist: bool) -> Self {
+    pub fn load(path: Option<PathBuf>, persist: bool, limit: usize) -> Self {
+        let limit = limit.clamp(1, HARD_MAX);
         let mut entries = VecDeque::new();
         if persist {
             if let Some(p) = &path {
                 if let Ok(s) = std::fs::read_to_string(p) {
                     if let Ok(v) = serde_json::from_str::<Vec<HistoryEntry>>(&s) {
-                        entries = v.into_iter().rev().take(MAX).collect::<Vec<_>>().into_iter().rev().collect();
+                        entries = v.into_iter().rev().take(limit).collect::<Vec<_>>().into_iter().rev().collect();
                     }
                 }
             }
         }
-        Self { entries, path, persist }
+        Self { entries, path, persist, limit }
+    }
+
+    /// Лимит из настроек; лишние записи отбрасываются сразу.
+    pub fn set_limit(&mut self, limit: usize) {
+        self.limit = limit.clamp(1, HARD_MAX);
+        if self.trim() {
+            self.save();
+        }
+    }
+
+    fn trim(&mut self) -> bool {
+        let before = self.entries.len();
+        while self.entries.len() > self.limit {
+            self.entries.pop_front();
+        }
+        before != self.entries.len()
     }
 
     pub fn set_persist(&mut self, persist: bool) {
@@ -124,12 +150,20 @@ impl History {
 
     pub fn push(&mut self, e: HistoryEntry) {
         self.entries.push_back(e);
-        while self.entries.len() > MAX {
-            self.entries.pop_front();
-        }
+        self.trim();
         self.save();
     }
 
+    /// Запись по индексу из `items()` (0 — самая свежая), изменяемая.
+    pub fn nth_newest_mut(&mut self, index: usize) -> Option<&mut HistoryEntry> {
+        let n = self.entries.len();
+        if index >= n {
+            return None;
+        }
+        self.entries.get_mut(n - 1 - index)
+    }
+
+    #[cfg(test)]
     pub fn last_mut(&mut self) -> Option<&mut HistoryEntry> {
         self.entries.back_mut()
     }
@@ -202,7 +236,7 @@ mod tests {
 
     #[test]
     fn keeps_only_last_max_entries() {
-        let mut h = History::load(None, false);
+        let mut h = History::load(None, false, MAX);
         for i in 0..(MAX as u64 + 5) {
             h.push(entry(i));
         }
@@ -214,11 +248,11 @@ mod tests {
     fn disk_roundtrip_and_removal_when_disabled() {
         let dir = std::env::temp_dir().join(format!("restyle-hist-{}", std::process::id()));
         let path = dir.join("history.json");
-        let mut h = History::load(Some(path.clone()), true);
+        let mut h = History::load(Some(path.clone()), true, MAX);
         h.push(entry(1));
         h.push(entry(2));
         assert!(path.exists());
-        let h2 = History::load(Some(path.clone()), true);
+        let h2 = History::load(Some(path.clone()), true, MAX);
         assert_eq!(h2.len(), 2);
         let mut h2 = h2;
         assert_eq!(h2.last_mut().unwrap().result, "r2");
@@ -232,7 +266,7 @@ mod tests {
     fn items_are_newest_first_and_clear_wipes_disk() {
         let dir = std::env::temp_dir().join(format!("restyle-hist-items-{}", std::process::id()));
         let path = dir.join("history.json");
-        let mut h = History::load(Some(path.clone()), true);
+        let mut h = History::load(Some(path.clone()), true, MAX);
         h.push(entry(1));
         h.push(entry(2));
         let items = h.items();

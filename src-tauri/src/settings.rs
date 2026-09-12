@@ -9,7 +9,8 @@ use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 use ts_rs::TS;
 
-use crate::hotkey::{COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
+use crate::hotkey::combo::VK_DOUBLE_TAP;
+use crate::hotkey::{COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
 
 pub const STORE_FILE: &str = "settings.json";
 /// Пресеты моделей (замер 12.09.2026 по живому API).
@@ -31,22 +32,33 @@ pub struct HotkeyCombo {
     pub key: u32,
     /// Доп. обычные клавиши (VK) для нестандартных комбо.
     pub extra_keys: Vec<u32>,
+    /// Двойное нажатие единственного модификатора («Ctrl, Ctrl»); `key` = 0.
+    pub double: bool,
 }
 
 impl Default for HotkeyCombo {
     fn default() -> Self {
-        Self { ctrl: false, alt: false, shift: false, win: false, key: 0, extra_keys: Vec::new() }
+        Self { ctrl: false, alt: false, shift: false, win: false, key: 0, extra_keys: Vec::new(), double: false }
     }
 }
 
 impl HotkeyCombo {
     pub const fn new(ctrl: bool, alt: bool, shift: bool, key: u32) -> Self {
-        Self { ctrl, alt, shift, win: false, key, extra_keys: Vec::new() }
+        Self { ctrl, alt, shift, win: false, key, extra_keys: Vec::new(), double: false }
+    }
+
+    /// «Дважды модификатор»: Ctrl, Ctrl.
+    pub fn double_tap(ctrl: bool, alt: bool, shift: bool, win: bool) -> Self {
+        Self { ctrl, alt, shift, win, key: 0, extra_keys: Vec::new(), double: true }
     }
 
     /// Нормализованные VK для ComboSet (модификаторы — «обобщённые» коды:
     /// VK_CONTROL/VK_MENU/VK_SHIFT/VK_LWIN, трекер сам сводит L/R-варианты).
     pub fn to_vks(&self) -> Vec<u32> {
+        if self.double {
+            let m = if self.ctrl { 0x11 } else if self.alt { 0x12 } else if self.shift { 0x10 } else { 0x5B };
+            return vec![VK_DOUBLE_TAP, m];
+        }
         let mut v = Vec::with_capacity(5);
         if self.ctrl {
             v.push(0x11);
@@ -68,7 +80,7 @@ impl HotkeyCombo {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.key == 0 && self.extra_keys.is_empty()
+        self.key == 0 && self.extra_keys.is_empty() && !self.double
     }
 
     /// Есть ли модификатор. Комбинация без него (просто `A`) глотала бы клавишу
@@ -79,6 +91,10 @@ impl HotkeyCombo {
 
     /// Годится для хука: непустая и с модификатором.
     pub fn is_valid(&self) -> bool {
+        if self.double {
+            let mods = [self.ctrl, self.alt, self.shift, self.win].iter().filter(|m| **m).count();
+            return mods == 1 && self.key == 0 && self.extra_keys.is_empty();
+        }
         !self.is_empty() && self.has_modifier()
     }
 
@@ -121,29 +137,106 @@ pub struct Style {
     pub hotkey: Option<HotkeyCombo>,
     /// Встроенный стиль: имя/инструкцию можно править, удалить нельзя.
     pub builtin: bool,
+    /// Прикладывать снимок экрана к запросу этого стиля. Правке грамматики
+    /// контекст не нужен, и без кадра ответ приходит заметно быстрее.
+    pub screenshot: bool,
+    /// Переписывание моделью или перевод движком перевода.
+    pub kind: StyleKind,
+    /// Код языка для `kind = translate` (см. `TRANSLATE_LANGS`).
+    pub target_lang: String,
+    /// id стиля, которым причесать перевод (пусто — отдать перевод как есть).
+    /// Так «перевести на английский и сделать формальным» — один стиль.
+    pub post_style: String,
 }
 
 impl Default for Style {
     fn default() -> Self {
-        Self { id: String::new(), name: String::new(), instruction: String::new(), hotkey: None, builtin: false }
+        Self {
+            id: String::new(),
+            name: String::new(),
+            instruction: String::new(),
+            hotkey: None,
+            builtin: false,
+            screenshot: true,
+            kind: StyleKind::Prompt,
+            target_lang: String::new(),
+            post_style: String::new(),
+        }
     }
 }
 
-fn builtin(id: &str, name: &str, instruction: &str) -> Style {
-    Style { id: id.into(), name: name.into(), instruction: instruction.into(), hotkey: None, builtin: true }
+/// Что делает стиль: переписывает текст моделью или переводит отдельным
+/// движком (DeepL). Перевод моделью медленнее и тратит квоту Gemini, поэтому
+/// это разные виды стиля, а не разные промпты.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub enum StyleKind {
+    #[default]
+    Prompt,
+    Translate,
+}
+
+/// Языки перевода: код DeepL и подпись. `EN-US`/`EN-GB` у DeepL — разные цели.
+pub const TRANSLATE_LANGS: &[(&str, &str)] = &[
+    ("EN-US", "English (US)"),
+    ("EN-GB", "English (UK)"),
+    ("RU", "Русский"),
+    ("UK", "Українська"),
+    ("DE", "Deutsch"),
+    ("FR", "Français"),
+    ("ES", "Español"),
+    ("IT", "Italiano"),
+    ("PL", "Polski"),
+    ("PT-PT", "Português"),
+    ("TR", "Türkçe"),
+    ("ZH", "中文"),
+    ("JA", "日本語"),
+];
+
+fn builtin(id: &str, name: &str, instruction: &str, screenshot: bool) -> Style {
+    Style {
+        id: id.into(),
+        name: name.into(),
+        instruction: instruction.into(),
+        builtin: true,
+        screenshot,
+        ..Style::default()
+    }
+}
+
+/// Встроенный перевод: отдельный движок, кадр экрана не нужен.
+fn builtin_tr(id: &str, name: &str, lang: &str, instruction: &str) -> Style {
+    Style {
+        id: id.into(),
+        name: name.into(),
+        instruction: instruction.into(),
+        builtin: true,
+        screenshot: false,
+        kind: StyleKind::Translate,
+        target_lang: lang.into(),
+        ..Style::default()
+    }
 }
 
 pub fn builtin_styles() -> Vec<Style> {
     vec![
-        builtin("formal", "Formal", "Rewrite in a formal, professional register. Polite, precise, no slang or emoji."),
-        builtin("casual", "Casual", "Rewrite in a relaxed, friendly, conversational tone, as between people who know each other."),
-        builtin("shorter", "Shorter", "Make it noticeably shorter. Keep every fact; cut filler, repetition and hedging."),
-        builtin("longer", "Longer", "Expand it: add natural detail, transitions and clarity without inventing new facts."),
-        builtin("fix", "Fix grammar", "Fix spelling, grammar and punctuation only. Keep wording, tone and formatting as close to the original as possible."),
-        builtin("to-en", "Translate to English", "Translate into natural, fluent English. Keep tone, formatting, names and numbers."),
-        builtin("to-ru", "Translate to Russian", "Translate into natural, fluent Russian. Keep tone, formatting, names and numbers."),
+        builtin("formal", "Formal", "Rewrite in a formal, professional register. Polite, precise, no slang or emoji.", true),
+        builtin("casual", "Casual", "Rewrite in a relaxed, friendly, conversational tone, as between people who know each other.", true),
+        builtin("shorter", "Shorter", "Make it noticeably shorter. Keep every fact; cut filler, repetition and hedging.", true),
+        builtin("longer", "Longer", "Expand it: add natural detail, transitions and clarity without inventing new facts.", true),
+        // Правке грамматики и переводу контекст с экрана не нужен — без кадра быстрее.
+        builtin("fix", "Fix grammar", "Fix spelling, grammar and punctuation only. Keep wording, tone and formatting as close to the original as possible.", false),
+        // Перевод идёт через DeepL; instruction — запасной промпт на случай,
+        // когда ключа DeepL нет и переводить приходится модели.
+        builtin_tr("to-en", "Translate to English", "EN-US", "Translate into natural, fluent English. Keep tone, formatting, names and numbers."),
+        builtin_tr("to-ru", "Translate to Russian", "RU", "Translate into natural, fluent Russian. Keep tone, formatting, names and numbers."),
+        builtin_tr("to-uk", "Translate to Ukrainian", "UK", "Translate into natural, fluent Ukrainian. Keep tone, formatting, names and numbers."),
     ]
 }
+
+/// Пресеты акцентного цвета (сами цвета — в `src/lib/theme.ts`).
+pub const ACCENTS: &[&str] = &["amber", "blue", "green", "violet", "rose", "teal"];
 
 /// Настройки приложения.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -154,12 +247,16 @@ pub struct Settings {
     pub main_hotkey: HotkeyCombo,
     /// Вернуть предыдущий текст (пустая — выключено).
     pub undo_hotkey: HotkeyCombo,
+    /// Исправить раскладку выделения/поля (пустая — выключено).
+    pub layout_hotkey: HotkeyCombo,
     pub styles: Vec<Style>,
     /// Имя модели Gemini.
     pub model: String,
     pub autostart: bool,
     /// "dark" | "light" | "system"
     pub theme: String,
+    /// Акцентный цвет интерфейса: id пресета из `ACCENTS`.
+    pub accent: String,
     /// Для быстрых стилей: вставлять сразу, не ждать Enter.
     pub auto_paste: bool,
     /// Глобальный выключатель скриншота.
@@ -172,6 +269,24 @@ pub struct Settings {
     pub select_only_processes: Vec<String>,
     /// Писать историю переписываний на диск.
     pub history_to_disk: bool,
+    /// Сколько последних пар «исходник — результат» держать.
+    pub history_limit: u32,
+    /// "system" | "ru" | "uk" | "en" — язык интерфейса.
+    pub language: String,
+    /// Стиль короткого нажатия основного хоткея (пусто — сразу открывать панель).
+    pub quick_style: String,
+    /// Короткое нажатие применяет `quick_style`, удержание открывает панель.
+    pub long_press: bool,
+    /// Через сколько мс удержания показать кольцо-индикатор у курсора.
+    pub long_press_ring_ms: u32,
+    /// Через сколько мс удержания открыть панель выбора.
+    pub long_press_open_ms: u32,
+    /// Движок перевода: "deepl" | "gemini".
+    pub translator: String,
+    /// Возвращать прежнее содержимое буфера после вставки через клипборд.
+    pub restore_clipboard: bool,
+    /// Мастер первого запуска пройден (или пропущен).
+    pub onboarded: bool,
 }
 
 impl Default for Settings {
@@ -179,12 +294,15 @@ impl Default for Settings {
         Self {
             main_hotkey: HotkeyCombo::new(true, true, false, 0x52), // Ctrl+Alt+R
             undo_hotkey: HotkeyCombo::new(true, true, false, 0x5A), // Ctrl+Alt+Z
+            // Дважды Ctrl: одной рукой и не пересекается с сочетаниями программ.
+            layout_hotkey: HotkeyCombo::double_tap(true, false, false, false),
             styles: builtin_styles(),
             // 2.5 недоступна новым ключам (API: 404 «no longer available»);
             // 3.5-flash-lite даёт первый чанк ≈0,7 с против ≈2,9 с у 3.6-flash.
             model: MODEL_LITE.into(),
             autostart: false,
             theme: "system".into(),
+            accent: "amber".into(),
             auto_paste: false,
             screenshot_enabled: true,
             screenshot_mode: "window".into(),
@@ -206,6 +324,15 @@ impl Default for Settings {
             .map(|s| s.to_string())
             .collect(),
             history_to_disk: false,
+            history_limit: crate::history::MAX as u32,
+            language: "system".into(),
+            quick_style: String::new(),
+            long_press: false,
+            long_press_ring_ms: 300,
+            long_press_open_ms: 600,
+            translator: "deepl".into(),
+            restore_clipboard: true,
+            onboarded: false,
         }
     }
 }
@@ -254,6 +381,7 @@ impl Settings {
         let mut v: Vec<(String, &HotkeyCombo)> = vec![
             (COMBO_MAIN.to_string(), &self.main_hotkey),
             (COMBO_UNDO.to_string(), &self.undo_hotkey),
+            (COMBO_LAYOUT.to_string(), &self.layout_hotkey),
         ];
         for s in &self.styles {
             if let Some(h) = &s.hotkey {
@@ -294,8 +422,25 @@ impl Settings {
         if !matches!(self.theme.as_str(), "system" | "dark" | "light") {
             self.theme = "system".into();
         }
+        if !ACCENTS.contains(&self.accent.as_str()) {
+            self.accent = "amber".into();
+        }
         if !matches!(self.screenshot_mode.as_str(), "window" | "monitor") {
             self.screenshot_mode = "window".into();
+        }
+        if !matches!(self.language.as_str(), "system" | "ru" | "uk" | "en") {
+            self.language = "system".into();
+        }
+        self.history_limit = self.history_limit.clamp(1, crate::history::HARD_MAX as u32);
+        if !matches!(self.translator.as_str(), "deepl" | "gemini") {
+            self.translator = "deepl".into();
+        }
+        // Кольцо должно появляться заметно раньше панели, иначе удержание
+        // выглядит как залипание.
+        self.long_press_ring_ms = self.long_press_ring_ms.clamp(100, 1500);
+        self.long_press_open_ms = self.long_press_open_ms.clamp(200, 3000);
+        if self.long_press_open_ms <= self.long_press_ring_ms {
+            self.long_press_open_ms = self.long_press_ring_ms + 200;
         }
         self.screenshot_excluded_processes = clean_list(&self.screenshot_excluded_processes);
         self.select_only_processes = clean_list(&self.select_only_processes);
@@ -308,6 +453,9 @@ impl Settings {
         }
         if !self.undo_hotkey.is_empty() && !self.undo_hotkey.has_modifier() {
             self.undo_hotkey = HotkeyCombo::default();
+        }
+        if !self.layout_hotkey.is_empty() && !self.layout_hotkey.has_modifier() {
+            self.layout_hotkey = HotkeyCombo::default();
         }
 
         let builtin_ids: Vec<String> = builtin_styles().into_iter().map(|s| s.id).collect();
@@ -343,6 +491,43 @@ impl Settings {
         if self.styles.is_empty() {
             self.styles = builtin_styles();
         }
+
+        // Ссылки между стилями чиним после того, как id устаканились.
+        for st in &mut self.styles {
+            match st.kind {
+                StyleKind::Translate => {
+                    if !TRANSLATE_LANGS.iter().any(|(code, _)| *code == st.target_lang) {
+                        st.target_lang = "EN-US".into();
+                    }
+                }
+                StyleKind::Prompt => {
+                    st.target_lang = String::new();
+                    st.post_style = String::new();
+                }
+            }
+        }
+        let ids: Vec<String> = self.styles.iter().map(|s| s.id.clone()).collect();
+        let prompt_ids: Vec<String> = self
+            .styles
+            .iter()
+            .filter(|s| s.kind == StyleKind::Prompt)
+            .map(|s| s.id.clone())
+            .collect();
+        for st in &mut self.styles {
+            // Причесать перевод можно только обычным стилем и не самим собой.
+            if !st.post_style.is_empty()
+                && (!prompt_ids.contains(&st.post_style) || st.post_style == st.id)
+            {
+                st.post_style = String::new();
+            }
+        }
+        if !self.quick_style.is_empty() && !ids.contains(&self.quick_style) {
+            self.quick_style = String::new();
+        }
+        if self.long_press && self.quick_style.is_empty() {
+            // Без стиля короткому нажатию нечего делать — берём первый.
+            self.quick_style = ids.first().cloned().unwrap_or_default();
+        }
     }
 }
 
@@ -377,8 +562,9 @@ mod tests {
         let c = s.combos();
         assert_eq!(c[0].0, "main");
         assert_eq!(c[1].0, "undo");
-        assert_eq!(c[2], ("style:formal".to_string(), vec![0x11, 0x12, 0x46]));
-        assert_eq!(c.len(), 3);
+        assert_eq!(c[2], ("layout".to_string(), vec![VK_DOUBLE_TAP, 0x11]));
+        assert_eq!(c[3], ("style:formal".to_string(), vec![0x11, 0x12, 0x46]));
+        assert_eq!(c.len(), 4);
     }
 
     #[test]
@@ -442,6 +628,126 @@ mod tests {
     }
 
     #[test]
+    fn normalize_language_and_history_limit() {
+        let mut s = Settings::default();
+        s.language = "de".into();
+        s.history_limit = 0;
+        s.normalize();
+        assert_eq!(s.language, "system");
+        assert_eq!(s.history_limit, 1, "меньше одной пары истории не бывает");
+        s.language = "uk".into();
+        s.history_limit = 10_000;
+        s.normalize();
+        assert_eq!(s.language, "uk");
+        assert_eq!(s.history_limit, crate::history::HARD_MAX as u32);
+    }
+
+    #[test]
+    fn builtin_styles_decide_about_screenshot() {
+        let by_id = |id: &str| builtin_styles().into_iter().find(|s| s.id == id).unwrap();
+        assert!(by_id("formal").screenshot, "тон письма зависит от контекста");
+        assert!(!by_id("fix").screenshot, "правке грамматики кадр не нужен");
+        // Старый settings.json без поля: serde подставляет дефолт структуры.
+        let s: Style = serde_json::from_str(r#"{"id":"x","name":"X"}"#).unwrap();
+        assert!(s.screenshot);
+    }
+
+    /// Перевод и «причёска после перевода» — единственные ссылки между
+    /// стилями: битую ссылку легко получить, переименовав или удалив стиль.
+    #[test]
+    fn translate_fields_are_normalized() {
+        let mut s = Settings::default();
+        // несуществующий язык → дефолтный
+        s.styles.push(Style {
+            id: "tr".into(),
+            name: "Перевод".into(),
+            kind: StyleKind::Translate,
+            target_lang: "КЛИНГОНСКИЙ".into(),
+            post_style: "formal".into(),
+            ..Style::default()
+        });
+        // обычный стиль не должен тащить поля перевода
+        s.styles.push(Style {
+            id: "plain".into(),
+            name: "Обычный".into(),
+            target_lang: "RU".into(),
+            post_style: "formal".into(),
+            ..Style::default()
+        });
+        s.normalize();
+        let tr = s.styles.iter().find(|x| x.id == "tr").unwrap();
+        assert_eq!(tr.target_lang, "EN-US");
+        assert_eq!(tr.post_style, "formal");
+        let plain = s.styles.iter().find(|x| x.id == "plain").unwrap();
+        assert_eq!(plain.target_lang, "");
+        assert_eq!(plain.post_style, "");
+    }
+
+    #[test]
+    fn post_style_must_point_at_existing_prompt_style() {
+        let mut s = Settings::default();
+        s.styles.push(Style {
+            id: "tr".into(),
+            name: "Перевод".into(),
+            kind: StyleKind::Translate,
+            target_lang: "RU".into(),
+            post_style: "нет-такого".into(),
+            ..Style::default()
+        });
+        s.normalize();
+        assert_eq!(s.styles.last().unwrap().post_style, "");
+
+        // ссылка на сам себя и на другой перевод тоже недопустима
+        let mut s2 = Settings::default();
+        s2.styles.push(Style {
+            id: "tr".into(),
+            name: "Перевод".into(),
+            kind: StyleKind::Translate,
+            target_lang: "RU".into(),
+            post_style: "to-en".into(),
+            ..Style::default()
+        });
+        s2.normalize();
+        assert_eq!(s2.styles.last().unwrap().post_style, "");
+    }
+
+    #[test]
+    fn long_press_thresholds_are_ordered_and_have_a_style() {
+        let mut s = Settings { long_press: true, ..Settings::default() };
+        s.long_press_ring_ms = 5;
+        s.long_press_open_ms = 5;
+        s.normalize();
+        assert_eq!(s.long_press_ring_ms, 100, "кольцо не может появиться мгновенно");
+        assert!(
+            s.long_press_open_ms > s.long_press_ring_ms,
+            "панель обязана открываться позже кольца, иначе кольца не видно"
+        );
+        assert!(!s.quick_style.is_empty(), "короткому нажатию нужен стиль");
+
+        // стиль, которого нет, сбрасывается
+        let mut s2 = Settings { quick_style: "нет-такого".into(), ..Settings::default() };
+        s2.normalize();
+        assert_eq!(s2.quick_style, "");
+    }
+
+    #[test]
+    fn translator_enum_is_guarded() {
+        let mut s = Settings { translator: "yandex".into(), ..Settings::default() };
+        s.normalize();
+        assert_eq!(s.translator, "deepl");
+    }
+
+    #[test]
+    fn builtin_translations_cover_three_languages() {
+        let tr: Vec<_> = builtin_styles()
+            .into_iter()
+            .filter(|s| s.kind == StyleKind::Translate)
+            .map(|s| s.target_lang)
+            .collect();
+        assert_eq!(tr, vec!["EN-US", "RU", "UK"]);
+    }
+
+    #[test]
     fn settings_roundtrip_camel_case_and_defaults() {
         let s = Settings::default();
         let json = serde_json::to_string(&s).unwrap();
@@ -451,6 +757,6 @@ mod tests {
         assert_eq!(back, s);
         let partial: Settings = serde_json::from_str(r#"{"autostart":true}"#).unwrap();
         assert!(partial.autostart);
-        assert_eq!(partial.styles.len(), 7);
+        assert_eq!(partial.styles.len(), 8); // 5 переписывающих + 3 перевода
     }
 }

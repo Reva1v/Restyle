@@ -6,6 +6,7 @@
 //! - `overlay:show` — `ShowPayload`
 //! - `overlay:hide` — null
 //! - `overlay:key`  — vk-код клавиши оверлея (Enter/Tab/R/стрелки/1-9)
+//! - `overlay:ring` — `RingPayload` (кольцо удержания у курсора)
 //! - `overlay:text` — `TextPayload` (захваченный исходный текст)
 //! - `overlay:screenshot` — `ScreenshotPayload` (метаданные готового JPEG)
 //! - `settings-changed` — `Settings`
@@ -18,6 +19,20 @@
 
 use serde::Serialize;
 use ts_rs::TS;
+
+/// `overlay:ring` — кольцо-индикатор удержания основной комбинации.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct RingPayload {
+    #[ts(type = "number")]
+    pub gen: u64,
+    pub x: i32,
+    pub y: i32,
+    pub dpi_scale: f32,
+    /// За сколько мс кольцо должно заполниться до открытия панели.
+    pub fill_ms: u32,
+}
 
 /// Payload событий `rewrite:*`.
 #[derive(Clone, Debug, Serialize, TS)]

@@ -6,9 +6,31 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::{AiError, BoxFuture, Provider, RewriteRequest, CONNECT_TIMEOUT, REQUEST_TIMEOUT};
+use super::{AiError, BoxFuture, ModelInfo, Provider, RewriteRequest, CONNECT_TIMEOUT, REQUEST_TIMEOUT};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+
+/// Годится ли модель для переписывания текста. Чёрного списка мало: ключ
+/// отдаёт картиночные (`nano-banana`), музыкальные (`lyria`), роботов,
+/// «глубокое исследование» и прочее — половина из них умеет `generateContent`.
+/// Поэтому белый список: только `gemini-*` семейств flash/pro, и уже из них
+/// вычёркиваем нетекстовые ветки.
+fn is_text_model(id: &str) -> bool {
+    const SKIP: &[&str] = &[
+        "embedding", "embed", "imagen", "image", "banana", "veo", "lyria", "tts",
+        "audio", "speech", "transcribe", "live", "realtime", "aqa", "vision",
+        "learnlm", "robotics", "computer-use", "customtools", "research",
+        "antigravity", "guard", "safety",
+    ];
+    let id = id.to_ascii_lowercase();
+    if !id.starts_with("gemini-") {
+        return false;
+    }
+    if !(id.contains("flash") || id.contains("pro")) {
+        return false;
+    }
+    !SKIP.iter().any(|bad| id.contains(bad))
+}
 
 pub struct Gemini {
     client: reqwest::Client,
@@ -27,6 +49,38 @@ impl Gemini {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
         Self { client, base_url: base_url.trim_end_matches('/').to_string() }
+    }
+
+    /// Каталог моделей ключа: `GET /models`. Ключи видят разный набор (2.5
+    /// новым ключам недоступна), поэтому список тянем у API, а не хардкодим.
+    pub async fn list_models(&self, key: &str) -> Result<Vec<ModelInfo>, AiError> {
+        let url = format!("{}/models?pageSize=200&key={key}", self.base_url);
+        let resp = self.client.get(url).send().await.map_err(|e| AiError::from_reqwest(&e))?;
+        let status = resp.status().as_u16();
+        let body = resp.text().await.map_err(|e| AiError::from_reqwest(&e))?;
+        if status != 200 {
+            return Err(AiError::from_status(status, &body));
+        }
+        let parsed: Value = serde_json::from_str(&body).map_err(|e| AiError::Other(e.to_string()))?;
+        let mut out = Vec::new();
+        for m in parsed["models"].as_array().into_iter().flatten() {
+            let id = m["name"].as_str().unwrap_or_default().trim_start_matches("models/");
+            let methods = m["supportedGenerationMethods"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            if id.is_empty() || !methods.contains(&"generateContent") || !is_text_model(id) {
+                continue;
+            }
+            out.push(ModelInfo {
+                fast: id.contains("flash") || id.contains("lite"),
+                display_name: m["displayName"].as_str().unwrap_or(id).to_string(),
+                id: id.to_string(),
+            });
+        }
+        // Быстрые — наверх: для переписывания в поле ввода важна задержка.
+        out.sort_by(|a, b| b.fast.cmp(&a.fast).then_with(|| a.id.cmp(&b.id)));
+        Ok(out)
     }
 
     /// Конфиг «минимум размышлений»: первый чанк быстрее, задача не требует
@@ -253,5 +307,43 @@ mod tests {
         let b2 = Gemini::build_body(&req2, true);
         assert_eq!(b2["contents"][0]["parts"].as_array().unwrap().len(), 1);
         assert!(b2["generationConfig"].get("thinkingConfig").is_none());
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::is_text_model;
+
+    /// Ключ отдаёт десятки моделей, и половина из них — не про текст.
+    #[test]
+    fn catalog_keeps_only_text_gemini() {
+        for good in [
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-flash-lite-latest",
+            "gemini-omni-1.1-flash",
+            "gemini-2.5-pro",
+            "gemini-pro-latest",
+        ] {
+            assert!(is_text_model(good), "{good} должна остаться");
+        }
+        for bad in [
+            "nano-banana-pro-preview",
+            "gemini-2.5-flash-image",
+            "imagen-4.0-generate",
+            "lyria-3-pro-preview",
+            "veo-3.0-generate",
+            "gemma-4-31b-it",
+            "deep-research-pro-preview-12-2025",
+            "antigravity-preview-05-2026",
+            "gemini-2.5-computer-use-preview-10-2025",
+            "gemini-3.5-transcribe",
+            "gemini-robotics-er-2-preview",
+            "gemini-3.1-pro-preview-customtools",
+            "gemini-embedding-001",
+            "gemini-2.5-flash-live",
+        ] {
+            assert!(!is_text_model(bad), "{bad} не должна попасть в список");
+        }
     }
 }

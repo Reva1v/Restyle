@@ -8,7 +8,11 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+};
 
 use super::text::wide_to_string;
 
@@ -31,6 +35,61 @@ pub fn foreground() -> Foreground {
         GetWindowThreadProcessId(h, Some(&mut pid));
         Foreground { hwnd: h.0 as isize, pid, exe: process_exe(pid).unwrap_or_default() }
     }
+}
+
+/// Видимое приложение с окном: exe + заголовок окна.
+#[derive(Clone, Debug, serde::Serialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct RunningApp {
+    /// Имя exe, как его видят списки настроек (`Telegram.exe`).
+    pub exe: String,
+    /// Заголовок окна: у UWP-приложений все окна принадлежат
+    /// `ApplicationFrameHost.exe`, и различить их можно только по нему.
+    pub title: String,
+}
+
+/// Приложения с видимым окном и заголовком. Свои окна и окна-инструменты
+/// пропускаем; по одному экземпляру на exe (первый попавшийся заголовок).
+pub fn running_apps() -> Vec<RunningApp> {
+    let mut found: Vec<RunningApp> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut found as *mut _ as isize));
+    }
+    found.sort_by_key(|a| a.exe.to_lowercase());
+    found
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let out = &mut *(lparam.0 as *mut Vec<RunningApp>);
+    if !IsWindowVisible(hwnd).as_bool() {
+        return true.into();
+    }
+    // Окна-инструменты (панельки, трей-хосты) приложением не считаются.
+    if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+        return true.into();
+    }
+    let len = GetWindowTextLengthW(hwnd);
+    if len <= 0 {
+        return true.into();
+    }
+    let mut buf = vec![0u16; len as usize + 1];
+    let n = GetWindowTextW(hwnd, &mut buf);
+    let title = wide_to_string(&buf[..n as usize]);
+    if title.trim().is_empty() {
+        return true.into();
+    }
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == std::process::id() || pid == 0 {
+        return true.into();
+    }
+    let Some(exe) = process_exe(pid) else { return true.into() };
+    if exe.is_empty() || out.iter().any(|a| a.exe.eq_ignore_ascii_case(&exe)) {
+        return true.into();
+    }
+    out.push(RunningApp { exe, title });
+    true.into()
 }
 
 fn process_exe(pid: u32) -> Option<String> {

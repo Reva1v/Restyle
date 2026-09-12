@@ -11,11 +11,17 @@ import type { RewriteChunk } from "../bindings/RewriteChunk";
 import type { RewriteDone } from "../bindings/RewriteDone";
 import type { RewriteError } from "../bindings/RewriteError";
 import type { HistoryItem } from "../bindings/HistoryItem";
+import type { RingPayload } from "../bindings/RingPayload";
+import type { ModelInfo } from "../bindings/ModelInfo";
+import type { RunningApp } from "../bindings/RunningApp";
+import type { DeeplUsage } from "../bindings/DeeplUsage";
+import type { StyleKind } from "../bindings/StyleKind";
 
 // Типы данных генерируются ts-rs в src/bindings/ (cargo test export_bindings).
 // Этот файл — только тонкая обёртка invoke/listen.
 export type { ShowPayload, Settings, HotkeyCombo, Style, TextPayload, ScreenshotPayload, HistoryItem };
 export type { RewriteStart, RewriteChunk, RewriteDone, RewriteError };
+export type { RingPayload, ModelInfo, RunningApp, DeeplUsage, StyleKind };
 
 export const events = {
   onShow: (cb: (p: ShowPayload) => void): Promise<UnlistenFn> =>
@@ -44,6 +50,18 @@ export const events = {
     listen<number>("overlay:key", (e) => cb(e.payload)),
   onSettingsChanged: (cb: (s: Settings) => void): Promise<UnlistenFn> =>
     listen<Settings>("settings-changed", (e) => cb(e.payload)),
+  /** история пополнилась/откатилась/очистилась — окно истории перечитывает список */
+  onHistoryChanged: (cb: () => void): Promise<UnlistenFn> => listen("history-changed", () => cb()),
+  /** кольцо удержания основной комбинации у курсора */
+  onRing: (cb: (p: RingPayload) => void): Promise<UnlistenFn> =>
+    listen<RingPayload>("overlay:ring", (e) => cb(e.payload)),
+  /** меню трея показано (в payload — масштаб экрана) */
+  onMenuShow: (cb: (scale: number) => void): Promise<UnlistenFn> =>
+    listen<number>("menu:show", (e) => cb(e.payload)),
+  onMenuHide: (cb: () => void): Promise<UnlistenFn> => listen("menu:hide", () => cb()),
+  /** окно меню показывает список регистров (кнопка «Регистр» в панели) */
+  onMenuFormat: (cb: (p: { scale: number; current: string }) => void): Promise<UnlistenFn> =>
+    listen<{ scale: number; current: string }>("menu:format", (e) => cb(e.payload)),
 };
 
 export const commands = {
@@ -79,7 +97,39 @@ export const commands = {
   copyHistory: (index: number) => invoke("copy_history", { index }),
   clearHistory: () => invoke("clear_history"),
   /** перекрасить акриловый тинт окна оверлея под тёмную/светлую тему */
-  setOverlayTint: (dark: boolean) => invoke("set_overlay_tint", { dark }),
+  /** высота содержимого HUD в логических пикселях — окно подгоняется */
+  resizeOverlay: (height: number) => invoke("resize_overlay", { height }),
+  resizeToast: (width: number, height: number) => invoke("resize_toast", { width, height }),
+  openUrl: (url: string) => invoke("open_url", { url }),
+  /** вернуть текст конкретной записи истории (окно истории) */
+  undoEntry: (index: number) => invoke("undo_entry", { index }),
+  openSettingsWindow: () => invoke("open_settings_window"),
+  openHistoryWindow: () => invoke("open_history_window"),
+  /** своя шапка окна вместо системных декораций */
+  winMinimize: () => invoke("win_minimize"),
+  winClose: () => invoke("win_close"),
+  /** мастер первого запуска: стоит ли хук */
+  diagnostics: (): Promise<{ hookInstalled: boolean }> => invoke("diagnostics"),
+  /** проверка ключа тестовым запросом; в keyring не пишет */
+  testApiKey: (key: string): Promise<void> => invoke("test_api_key", { key }),
+  finishOnboarding: () => invoke("finish_onboarding"),
+  /** каталог моделей ключа: у разных ключей он разный, поэтому тянем у API */
+  listModels: (): Promise<ModelInfo[]> => invoke("list_models"),
+  /** запущенные приложения с окнами — выбор процессов без ручного ввода */
+  runningApps: (): Promise<RunningApp[]> => invoke("running_apps"),
+  /** ключ DeepL: как и Gemini, только в Credential Manager */
+  setDeeplKey: (key: string): Promise<void> => invoke("set_deepl_key", { key }),
+  hasDeeplKey: (): Promise<boolean> => invoke("has_deepl_key"),
+  clearDeeplKey: (): Promise<void> => invoke("clear_deepl_key"),
+  /** проверка ключа DeepL + остаток квоты; пустая строка — проверить сохранённый */
+  testDeeplKey: (key: string): Promise<DeeplUsage> => invoke("test_deepl_key", { key }),
+  /** выход из приложения (пункт меню трея) */
+  exitApp: () => invoke("exit_app"),
+  /** меню трея: закрыть и подогнать высоту окна под содержимое */
+  closeTrayMenu: () => invoke("close_tray_menu"),
+  resizeMenu: (height: number) => invoke("resize_menu", { height }),
+  openFormatMenu: (left: number, top: number, bottom: number, current: string) =>
+    invoke("open_format_menu", { left, top, bottom, current }),
 };
 
 export const VK = {

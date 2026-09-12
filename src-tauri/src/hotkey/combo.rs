@@ -14,7 +14,17 @@
 pub enum Edge {
     Show,
     Hide,
+    /// Модификатор нажат дважды подряд (Ctrl, Ctrl). Приходит на отпускании —
+    /// глотать нечего, приложение уже видело оба нажатия.
+    Double,
 }
+
+/// Маркер в списке VK: `[VK_DOUBLE_TAP, модификатор]` — «дважды модификатор».
+pub const VK_DOUBLE_TAP: u32 = 0x1_0000;
+/// Нажатие короче этого — «тап», а не удержание.
+const TAP_MAX_MS: u64 = 300;
+/// Между отпусканиями двух тапов.
+const DOUBLE_GAP_MS: u64 = 400;
 
 pub const VK_SHIFT: u32 = 0x10;
 pub const VK_CONTROL: u32 = 0x11;
@@ -98,6 +108,12 @@ pub struct ComboSet {
     entries: Vec<(String, ComboTracker)>,
     /// Зажатые сейчас модификаторы (нормализованные VK) — для точного совпадения.
     mods_down: Vec<u32>,
+    /// Двойные нажатия модификатора: (id, нормализованный VK).
+    doubles: Vec<(String, u32)>,
+    /// Модификатор нажат в одиночку (VK, время) — кандидат в тап.
+    solo: Option<(u32, u64)>,
+    /// Последний завершённый тап (VK, время отпускания).
+    last_tap: Option<(u32, u64)>,
 }
 
 impl ComboSet {
@@ -105,10 +121,15 @@ impl ComboSet {
     pub fn new(combos: &[(String, Vec<u32>)]) -> Self {
         let entries = combos
             .iter()
-            .filter(|(_, keys)| !keys.is_empty() && keys.len() <= 8)
+            .filter(|(_, keys)| !keys.is_empty() && keys.len() <= 8 && !keys.contains(&VK_DOUBLE_TAP))
             .map(|(id, keys)| (id.clone(), ComboTracker::new(keys)))
             .collect();
-        Self { entries, mods_down: Vec::new() }
+        let doubles = combos
+            .iter()
+            .filter(|(_, keys)| keys.len() == 2 && keys[0] == VK_DOUBLE_TAP && is_modifier(keys[1]))
+            .map(|(id, keys)| (id.clone(), normalize_vk(keys[1])))
+            .collect();
+        Self { entries, mods_down: Vec::new(), doubles, solo: None, last_tap: None }
     }
 
     #[cfg(test)]
@@ -116,9 +137,47 @@ impl ComboSet {
         self.entries.is_empty()
     }
 
-    /// Событие клавиатуры. `Some(id)` — комбинация `id` только что сложилась.
-    pub fn on_key(&mut self, vk: u32, down: bool) -> Option<&str> {
+    /// Событие клавиатуры. `Some((id, Show))` — комбинация сложилась (её надо
+    /// проглотить), `Some((id, Hide))` — её отпустили. Отпускание нужно для
+    /// «короткое нажатие — стиль, удержание — панель»; глотать его не надо,
+    /// иначе приложение под оверлеем останется с зажатой клавишей.
+    #[cfg(test)]
+    pub fn on_key(&mut self, vk: u32, down: bool) -> Option<(&str, Edge)> {
+        self.on_key_at(vk, down, 0)
+    }
+
+    /// То же с временем события (мс) — для двойных нажатий.
+    pub fn on_key_at(&mut self, vk: u32, down: bool, t: u64) -> Option<(&str, Edge)> {
         let nvk = normalize_vk(vk);
+        let mut double_hit: Option<usize> = None;
+        if is_modifier(nvk) {
+            if down {
+                if !self.mods_down.contains(&nvk) {
+                    // Тап — только модификатор в одиночку.
+                    if self.mods_down.is_empty() {
+                        self.solo = Some((nvk, t));
+                    } else {
+                        self.solo = None;
+                        self.last_tap = None;
+                    }
+                }
+            } else if let Some((m, t_down)) = self.solo.take() {
+                if m == nvk && t.saturating_sub(t_down) <= TAP_MAX_MS {
+                    match self.last_tap {
+                        Some((lm, lt)) if lm == nvk && t.saturating_sub(lt) <= DOUBLE_GAP_MS => {
+                            self.last_tap = None;
+                            double_hit = self.doubles.iter().position(|(_, v)| *v == nvk);
+                        }
+                        _ => self.last_tap = Some((nvk, t)),
+                    }
+                } else {
+                    self.last_tap = None;
+                }
+            }
+        } else if down {
+            self.solo = None;
+            self.last_tap = None;
+        }
         if is_modifier(nvk) {
             if down {
                 if !self.mods_down.contains(&nvk) {
@@ -129,16 +188,29 @@ impl ComboSet {
             }
         }
         let mut fired: Option<usize> = None;
+        let mut released: Option<usize> = None;
         for (i, (_, tracker)) in self.entries.iter_mut().enumerate() {
-            if tracker.on_key(nvk, down) == Some(Edge::Show) && fired.is_none() {
-                // точное совпадение модификаторов
-                let extra_mod = self.mods_down.iter().any(|&m| !tracker.contains(m));
-                if !extra_mod {
-                    fired = Some(i);
+            match tracker.on_key(nvk, down) {
+                Some(Edge::Show) if fired.is_none() => {
+                    // точное совпадение модификаторов
+                    let extra_mod = self.mods_down.iter().any(|&m| !tracker.contains(m));
+                    if !extra_mod {
+                        fired = Some(i);
+                    }
                 }
+                // Отпускание отдаём только той комбинации, что реально сработала:
+                // `active` у трекера ставится лишь после полного нажатия.
+                Some(Edge::Hide) if released.is_none() => released = Some(i),
+                _ => {}
             }
         }
-        fired.map(|i| self.entries[i].0.as_str())
+        if let Some(i) = double_hit {
+            return Some((self.doubles[i].0.as_str(), Edge::Double));
+        }
+        if let Some(i) = fired {
+            return Some((self.entries[i].0.as_str(), Edge::Show));
+        }
+        released.map(|i| (self.entries[i].0.as_str(), Edge::Hide))
     }
 }
 
@@ -161,13 +233,13 @@ mod tests {
     }
 
     #[test]
-    fn full_press_fires_once_and_release_is_silent() {
+    fn full_press_fires_once_and_release_is_reported() {
         let mut s = set();
         assert_eq!(s.on_key(CTRL, true), None);
         assert_eq!(s.on_key(ALT, true), None);
-        assert_eq!(s.on_key(R, true), Some("main"));
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
         assert_eq!(s.on_key(R, true), None); // автоповтор
-        assert_eq!(s.on_key(R, false), None);
+        assert_eq!(s.on_key(R, false), Some(("main", Edge::Hide)));
         assert_eq!(s.on_key(ALT, false), None);
         assert_eq!(s.on_key(CTRL, false), None);
     }
@@ -177,9 +249,9 @@ mod tests {
         let mut s = set();
         s.on_key(CTRL, true);
         s.on_key(ALT, true);
-        assert_eq!(s.on_key(F, true), Some("formal"));
+        assert_eq!(s.on_key(F, true), Some(("formal", Edge::Show)));
         s.on_key(F, false);
-        assert_eq!(s.on_key(R, true), Some("main"));
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
     }
 
     #[test]
@@ -188,7 +260,7 @@ mod tests {
         s.on_key(0xA2, true); // LCtrl
         s.on_key(0xA4, true); // LAlt
         s.on_key(0xA0, true); // LShift
-        assert_eq!(s.on_key(R, true), Some("main-shift"));
+        assert_eq!(s.on_key(R, true), Some(("main-shift", Edge::Show)));
     }
 
     #[test]
@@ -200,7 +272,7 @@ mod tests {
         assert_eq!(s.on_key(R, true), None);
         s.on_key(R, false);
         s.on_key(SHIFT, false);
-        assert_eq!(s.on_key(R, true), Some("main"));
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
     }
 
     #[test]
@@ -208,9 +280,69 @@ mod tests {
         let mut s = set();
         s.on_key(CTRL, true);
         s.on_key(ALT, true);
-        assert_eq!(s.on_key(R, true), Some("main"));
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
+        assert_eq!(s.on_key(R, false), Some(("main", Edge::Hide)));
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
+    }
+
+    /// Отпускание любой клавиши комбинации закрывает её: пользователь может
+    /// отпустить Ctrl раньше R, и «короткое нажатие» обязано это заметить.
+    #[test]
+    fn release_of_any_key_reports_hide_once() {
+        let mut s = set();
+        s.on_key(CTRL, true);
+        s.on_key(ALT, true);
+        assert_eq!(s.on_key(R, true), Some(("main", Edge::Show)));
+        assert_eq!(s.on_key(CTRL, false), Some(("main", Edge::Hide)));
+        // повторных Hide быть не должно
+        assert_eq!(s.on_key(ALT, false), None);
         assert_eq!(s.on_key(R, false), None);
-        assert_eq!(s.on_key(R, true), Some("main"));
+    }
+
+    /// Отпускание комбинации, которая не срабатывала (лишний модификатор),
+    /// молчит: иначе короткое нажатие Ctrl+Alt+Shift+R применило бы стиль.
+    #[test]
+    fn release_without_fire_is_silent() {
+        let mut s = ComboSet::new(&[("main".into(), vec![CTRL, ALT, R])]);
+        s.on_key(CTRL, true);
+        s.on_key(ALT, true);
+        s.on_key(SHIFT, true);
+        assert_eq!(s.on_key(R, true), None);
+        assert_eq!(s.on_key(R, false), Some(("main", Edge::Hide)));
+    }
+
+    #[test]
+    fn double_ctrl_fires_on_second_release() {
+        let mut s = ComboSet::new(&[("layout".into(), vec![VK_DOUBLE_TAP, CTRL]), ("main".into(), vec![CTRL, ALT, R])]);
+        assert_eq!(s.on_key_at(0xA2, true, 0), None);
+        assert_eq!(s.on_key_at(0xA2, false, 80), None);
+        assert_eq!(s.on_key_at(0xA3, true, 200), None); // правый Ctrl — тот же
+        assert_eq!(s.on_key_at(0xA3, false, 260), Some(("layout", Edge::Double)));
+        // третий тап сразу — не двойное (счёт начался заново)
+        s.on_key_at(CTRL, true, 300);
+        assert_eq!(s.on_key_at(CTRL, false, 350), None);
+    }
+
+    #[test]
+    fn double_tap_is_broken_by_other_keys_slowness_and_holds() {
+        let mut s = ComboSet::new(&[("layout".into(), vec![VK_DOUBLE_TAP, CTRL])]);
+        // Ctrl+C между тапами
+        s.on_key_at(CTRL, true, 0);
+        s.on_key_at(CTRL, false, 50);
+        s.on_key_at(CTRL, true, 100);
+        s.on_key_at(0x43, true, 120);
+        s.on_key_at(0x43, false, 150);
+        assert_eq!(s.on_key_at(CTRL, false, 180), None);
+        // слишком медленно
+        s.on_key_at(CTRL, true, 1000);
+        s.on_key_at(CTRL, false, 1050);
+        s.on_key_at(CTRL, true, 1600);
+        assert_eq!(s.on_key_at(CTRL, false, 1650), None);
+        // долгое удержание — не тап
+        s.on_key_at(CTRL, true, 3000);
+        s.on_key_at(CTRL, false, 3050);
+        s.on_key_at(CTRL, true, 3100);
+        assert_eq!(s.on_key_at(CTRL, false, 3500), None);
     }
 
     #[test]
