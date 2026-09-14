@@ -3,7 +3,7 @@
 Все фазы плана закрыты (1–7 — по ТЗ, 8–10 — правки по живому тесту).
 Архитектура, контракт IPC и принятые решения — в `CLAUDE.md`, обзор — в `README.md`,
 незакрытое — в `docs/TODO.md`.
-Установщик: `src-tauri/target/release/bundle/msi/Restyle_0.1.0_x64_{ru-RU,en-US}.msi`.
+Установщик: `src-tauri/target/release/bundle/msi/Restyle_0.1.1_x64_{ru-RU,en-US}.msi`.
 
 ## Что работает
 
