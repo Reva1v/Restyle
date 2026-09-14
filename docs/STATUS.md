@@ -66,7 +66,7 @@ Enter/Esc/R/Tab/стрелки/1–9 — через хук, все стили в
 
 ```
 pnpm install && pnpm tauri dev          # приложение
-cd src-tauri && cargo test               # 79 юнит-тестов + экспорт ts-rs
+cd src-tauri && cargo test               # 83 юнит-теста + экспорт ts-rs
 python scripts/mock_gemini.py 8765       # мок SSE (ключи bad-key / rate / slow)
 pwsh -File scripts/e2e_paste.ps1         # вставка/undo в Блокноте
 pwsh -File scripts/e2e_settings.ps1      # быстрый стиль, история, окно настроек

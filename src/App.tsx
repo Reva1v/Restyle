@@ -51,6 +51,8 @@ export default function App() {
   const [fmtOpen, setFmtOpen] = useState(false);
   const fmtBtnRef = useRef<HTMLButtonElement>(null);
   const genRef = useRef(0);
+  /** Номер запроса внутри сессии: чанки и done отменённой генерации игнорируются. */
+  const reqRef = useRef(0);
   const stylesRef = useRef(styles);
   stylesRef.current = styles;
   const rootRef = useRef<HTMLDivElement>(null);
@@ -100,6 +102,7 @@ export default function App() {
       }),
       events.onRewriteStart((p) => {
         if (p.gen !== genRef.current) return;
+        reqRef.current = p.req;
         // Генерацию мог запустить и бэкенд (быстрый стиль, повтор) — подсветку
         // берём из события, а не только из собственного клика.
         const f = parseFmt(p.styleId);
@@ -110,11 +113,12 @@ export default function App() {
         setGen({ state: "streaming", text: "" });
       }),
       events.onRewriteChunk((p) => {
-        if (p.gen !== genRef.current) return;
-        setGen((g) => ({ state: "streaming", text: g.text + p.text }));
+        if (p.gen !== genRef.current || p.req !== reqRef.current) return;
+        // `...g`: флаг pendingPaste («вставлю по готовности») чанк не сбрасывает.
+        setGen((g) => ({ ...g, state: "streaming", text: g.text + p.text }));
       }),
       events.onRewriteDone((p) => {
-        if (p.gen !== genRef.current) return;
+        if (p.gen !== genRef.current || p.req !== reqRef.current) return;
         setGen({ state: "done", text: p.text, elapsed: p.elapsedMs });
       }),
       events.onPendingPaste((g) => {
@@ -122,7 +126,7 @@ export default function App() {
         setGen((cur) => ({ ...cur, pendingPaste: true }));
       }),
       events.onRewriteError((p) => {
-        if (p.gen !== genRef.current) return;
+        if (p.gen !== genRef.current || p.req !== reqRef.current) return;
         setGen((g) => ({ state: "error", text: g.text, message: p.message }));
       }),
       events.onMenuFormat(() => setFmtOpen(true)),
@@ -159,7 +163,10 @@ export default function App() {
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [visible]);
+    // `ring` тоже в зависимостях: кольцо → панель проходит без overlay:hide,
+    // и без перезапуска наблюдатель остался бы на отсоединённом div кольца —
+    // панель не сообщала бы высоту и оставалась 148 px с обрезанным результатом.
+  }, [visible, ring]);
 
   if (!visible) return null;
 

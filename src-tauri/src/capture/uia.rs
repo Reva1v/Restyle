@@ -204,23 +204,37 @@ impl Client {
     }
 }
 
-/// Записать текст в элемент последнего чтения (фаза 5). `Ok(false)` — элемент
-/// не сохранён или не поддерживает ValuePattern.
-#[allow(dead_code)]
-pub fn write(text: &str) -> Result<bool, UiaError> {
-    LAST_ELEMENT.with_borrow(|l| {
-        let Some(el) = l else { return Ok(false) };
-        unsafe {
-            let Ok(u) = el.GetCurrentPattern(UIA_ValuePatternId) else { return Ok(false) };
-            let vp: IUIAutomationValuePattern = match u.cast() {
-                Ok(v) => v,
-                Err(_) => return Ok(false),
-            };
-            if vp.CurrentIsReadOnly().unwrap_or(BOOL(1)).as_bool() {
-                return Ok(false);
+impl Client {
+    /// Записать текст в элемент последнего чтения (фаза 5). `Ok(false)` — элемент
+    /// не сохранён, не в фокусе или не поддерживает ValuePattern.
+    pub fn write(&self, text: &str) -> Result<bool, UiaError> {
+        LAST_ELEMENT.with_borrow(|l| {
+            let Some(el) = l else { return Ok(false) };
+            unsafe {
+                // `LAST_ELEMENT` перезаписывает каждое чтение, в том числе
+                // отменённое по Esc в другом поле. Undo проверяет только HWND,
+                // а SetValue не требует фокуса — без этой сверки исходник
+                // Блокнота уехал бы в поле Chrome. Не тот элемент — клипборд.
+                let focused = self.auto.GetFocusedElement()?;
+                if !self.auto.CompareElements(el, &focused)?.as_bool() {
+                    eprintln!("[restyle] UIA: в фокусе другой элемент — SetValue пропущен");
+                    return Ok(false);
+                }
+                write_to(el, text)
             }
-            vp.SetValue(&windows::core::BSTR::from(text))?;
-            Ok(true)
-        }
-    })
+        })
+    }
+}
+
+unsafe fn write_to(el: &IUIAutomationElement, text: &str) -> Result<bool, UiaError> {
+    let Ok(u) = el.GetCurrentPattern(UIA_ValuePatternId) else { return Ok(false) };
+    let vp: IUIAutomationValuePattern = match u.cast() {
+        Ok(v) => v,
+        Err(_) => return Ok(false),
+    };
+    if vp.CurrentIsReadOnly().unwrap_or(BOOL(1)).as_bool() {
+        return Ok(false);
+    }
+    vp.SetValue(&windows::core::BSTR::from(text))?;
+    Ok(true)
 }

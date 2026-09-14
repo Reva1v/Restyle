@@ -14,8 +14,8 @@
 //! - `rewrite:chunk` — `RewriteChunk` (кусок текста)
 //! - `rewrite:done`  — `RewriteDone` (полный текст)
 //! - `rewrite:error` — `RewriteError` (человекочитаемое сообщение)
-//! Во всех rewrite-событиях `gen` — поколение сессии оверлея: фронт
-//! игнорирует чужие.
+//! Во всех rewrite-событиях `gen` — поколение сессии оверлея, `req` — номер
+//! запроса внутри неё: фронт игнорирует чужие.
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -41,6 +41,10 @@ pub struct RingPayload {
 pub struct RewriteStart {
     #[ts(type = "number")]
     pub gen: u64,
+    /// id запроса внутри сессии: результат отменённой генерации не должен
+    /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
+    #[ts(type = "number")]
+    pub req: u64,
     pub style_id: String,
     pub with_screenshot: bool,
 }
@@ -51,6 +55,10 @@ pub struct RewriteStart {
 pub struct RewriteChunk {
     #[ts(type = "number")]
     pub gen: u64,
+    /// id запроса внутри сессии: результат отменённой генерации не должен
+    /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
+    #[ts(type = "number")]
+    pub req: u64,
     pub text: String,
 }
 
@@ -60,6 +68,10 @@ pub struct RewriteChunk {
 pub struct RewriteDone {
     #[ts(type = "number")]
     pub gen: u64,
+    /// id запроса внутри сессии: результат отменённой генерации не должен
+    /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
+    #[ts(type = "number")]
+    pub req: u64,
     pub text: String,
     pub elapsed_ms: f32,
     pub first_chunk_ms: f32,
@@ -71,6 +83,10 @@ pub struct RewriteDone {
 pub struct RewriteError {
     #[ts(type = "number")]
     pub gen: u64,
+    /// id запроса внутри сессии: результат отменённой генерации не должен
+    /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
+    #[ts(type = "number")]
+    pub req: u64,
     pub message: String,
 }
 

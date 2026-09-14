@@ -137,7 +137,7 @@ docs/           статус и незакрытые задачи
 ## Разработка
 
 ```bash
-cd src-tauri && cargo test            # 79 юнит-тестов на чистую логику
+cd src-tauri && cargo test            # 83 юнит-теста на чистую логику
 cargo clippy --all-targets
 python scripts/mock_gemini.py 8765    # мок SSE: ключи bad-key / rate / slow
 pwsh -File scripts/e2e_paste.ps1      # E2E вставки и undo в Блокноте

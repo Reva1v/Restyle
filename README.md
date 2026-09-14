@@ -137,7 +137,7 @@ docs/           status and open tasks (in Russian)
 ## Development
 
 ```bash
-cd src-tauri && cargo test            # 79 unit tests on pure logic
+cd src-tauri && cargo test            # 83 unit tests on pure logic
 cargo clippy --all-targets
 python scripts/mock_gemini.py 8765    # SSE mock: keys bad-key / rate / slow
 pwsh -File scripts/e2e_paste.ps1      # paste & undo E2E in Notepad

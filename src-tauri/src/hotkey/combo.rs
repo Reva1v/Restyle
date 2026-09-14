@@ -137,6 +137,13 @@ impl ComboSet {
         self.entries.is_empty()
     }
 
+    /// Зажат ли сейчас хоть один модификатор (по событиям хука). Пока он
+    /// зажат, клавиши панели (Tab, Enter, стрелки, цифры, R) не наши:
+    /// Alt+Tab и Ctrl+R должны уйти в систему и приложение.
+    pub fn modifiers_held(&self) -> bool {
+        !self.mods_down.is_empty()
+    }
+
     /// Событие клавиатуры. `Some((id, Show))` — комбинация сложилась (её надо
     /// проглотить), `Some((id, Hide))` — её отпустили. Отпускание нужно для
     /// «короткое нажатие — стиль, удержание — панель»; глотать его не надо,
@@ -230,6 +237,19 @@ mod tests {
             ("formal".into(), vec![CTRL, ALT, F]),
             ("main-shift".into(), vec![CTRL, ALT, SHIFT, R]),
         ])
+    }
+
+    #[test]
+    fn modifiers_held_tracks_physical_state() {
+        let mut s = set();
+        assert!(!s.modifiers_held());
+        s.on_key(0xA4, true); // LAlt
+        assert!(s.modifiers_held());
+        s.on_key(0x09, true); // Tab при зажатом Alt — не клавиша панели
+        assert!(s.modifiers_held());
+        s.on_key(0x09, false);
+        s.on_key(0xA4, false);
+        assert!(!s.modifiers_held());
     }
 
     #[test]

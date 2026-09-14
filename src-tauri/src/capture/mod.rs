@@ -203,7 +203,7 @@ impl Worker {
     fn copy_via_clipboard(&self, select_only: bool) -> Result<String, CaptureError> {
         let snap = clipboard::snapshot(self.hwnd).map_err(CaptureError::Failed)?;
         let seq0 = clipboard::sequence_number();
-        clipboard::arm_update_flag();
+        clipboard::arm_update_flag(self.hwnd);
 
         input::release_modifiers();
         if !select_only {
@@ -234,8 +234,8 @@ impl Worker {
     /// снапшот → текст в буфер → Ctrl+A (если не select_only) → Ctrl+V →
     /// 150 мс → восстановление снапшота.
     fn paste(&self, text: &str, opts: PasteOptions) -> PasteResult {
-        if opts.prefer_uia {
-            match uia::write(text) {
+        if let (true, Some(uia)) = (opts.prefer_uia, &self.uia) {
+            match uia.write(text) {
                 Ok(true) => {
                     if let Some((start, len)) = opts.caret {
                         uia::select_range(start, len);

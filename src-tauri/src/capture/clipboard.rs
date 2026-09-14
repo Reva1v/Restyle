@@ -71,8 +71,16 @@ pub fn create_listener_window() -> Result<HWND, String> {
     }
 }
 
-/// Сбросить флаг перед действием, которое должно изменить клипборд.
-pub fn arm_update_flag() {
+/// Сбросить флаг перед действием, которое должно изменить клипборд. Сначала
+/// выгребаем уже лежащие в очереди `WM_CLIPBOARDUPDATE`: после вставки
+/// (`set_text` + `restore`) они ждут в очереди окна-слушателя, и если запрос
+/// захвата встал в очередь во время паузы вставки, `wait_update` вернул бы
+/// «обновился» до реального Ctrl+C и прочитал бы прежний буфер.
+pub fn arm_update_flag(hwnd: HWND) {
+    unsafe {
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, hwnd, WM_CLIPBOARDUPDATE, WM_CLIPBOARDUPDATE, PM_REMOVE).as_bool() {}
+    }
     CLIP_UPDATED.set(false);
 }
 

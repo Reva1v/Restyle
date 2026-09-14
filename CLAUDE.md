@@ -58,7 +58,8 @@ Git-коммиты — всегда на английском (глобальн�
    двойное нажатие модификатора — `[VK_DOUBLE_TAP, VK]`, срабатывает на втором отпускании и не глотается)
    + `UnboundedSender::send`. `LLKHF_INJECTED` отсекается (свои SendInput).
    Сработавшая комбинация ГЛОТАЕТСЯ (`return 1`); при видимом оверлее глотаются
-   Enter/Esc/Tab/R/стрелки/1-9 и уходят как `PanelKey`. Точное совпадение
+   Enter/Esc/Tab/R/стрелки/1-9 и уходят как `PanelKey` (только без зажатых модификаторов:
+   Alt+Tab, Ctrl+R уходят в систему). Точное совпадение
    модификаторов (Ctrl+Alt+Shift+R не запускает Ctrl+Alt+R). `SUSPENDED` — пауза
    на время захвата хоткея в настройках. Переустановка по `PostThreadMessageW`;
    watchdog из control-цикла раз в 2 с (`GetLastInputInfo` vs последний тик хука).
@@ -208,9 +209,11 @@ toast?, capturing, targetExe}`), `overlay:hide`, `overlay:key` (vk),
 удержания у курсора; `menu:show` (масштаб экрана) / `menu:hide` — своё меню трея;
 `menu:format {scale, current}` — то же окно показывает список регистров.
 
-События `rewrite:start {gen, styleId, withScreenshot}` / `rewrite:chunk {gen, text}` /
-`rewrite:done {gen, text, elapsedMs, firstChunkMs}` / `rewrite:error {gen, message}`;
-`gen` (u64 → TS number) есть и в `overlay:show` — фронт игнорирует чужие поколения.
+События `rewrite:start {gen, req, styleId, withScreenshot}` / `rewrite:chunk {gen, req, text}` /
+`rewrite:done {gen, req, text, elapsedMs, firstChunkMs}` / `rewrite:error {gen, req, message}`;
+`gen` (u64 → TS number) есть и в `overlay:show` — фронт игнорирует чужие поколения;
+`req` — номер запроса внутри сессии (смена стиля `gen` не меняет): результат уже
+отменённой генерации отбрасывают и control-цикл (`Session.req`), и фронт.
 
 Команды: `panel_shown` (ack первого кадра — замер задержки), `frontend_ready`,
 `hide_overlay`, `select_style(styleId)`, `regenerate`, `paste_result`, `undo_last`, `set_hotkey_capture(on)`,
@@ -312,7 +315,8 @@ CSS-переменные «R G B», новый хардкод цвета акц�
 (лимит 20, диск, переводы строк, порядок `items`, `preview`), `settings.rs`
 (нормализация id и перечислений, конфликты хоткеев, комбо без модификатора),
 `textfx.rs` (регистр, раскладка EN↔RU/UK, вклейка выделения), `hotkey/combo.rs`
-(двойное нажатие модификатора). Всего 79 тестов.
+(двойное нажатие модификатора), `hotkey/mod.rs` (watchdog с 32-битным переносом
+`dwTime`, `modifiers_held`). Всего 83 теста.
 Замеры на релизе — `scripts/perf_release.ps1`: считает CPU и память по всему
 дереву процессов (вебвью живут в отдельных `msedgewebview2.exe`) и КЛИКАЕТ в
 поле перед демо-хоткеем: `SendKeys('%')` для разблокировки `SetForegroundWindow`

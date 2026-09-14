@@ -131,15 +131,28 @@ pub fn watchdog_check() {
             return;
         }
         let now = GetTickCount64();
-        let input_age = now.saturating_sub(lii.dwTime as u64);
-        let hook_age = now.saturating_sub(last_hook);
-        if input_age < 1_000 && hook_age > 5_000 {
+        if hook_is_silent(now, lii.dwTime, last_hook) {
             eprintln!(
-                "[restyle] keyboard hook silent {hook_age} ms with recent input - reinstalling"
+                "[restyle] keyboard hook silent {} ms with recent input - reinstalling",
+                now.saturating_sub(last_hook)
             );
             post(WM_APP_REINSTALL);
         }
     }
+}
+
+/// Чистая часть watchdog: ввод был меньше секунды назад, а хук молчит дольше
+/// 5 с. `last_input32` — `LASTINPUTINFO.dwTime`, он 32-битный (GetTickCount),
+/// поэтому возраст ввода считаем в 32 битах с переносом: после 49,7 дня
+/// аптайма прямое вычитание из `GetTickCount64` давало бы ~2^32 мс, и
+/// переустановка хука никогда бы не срабатывала.
+fn hook_is_silent(now: u64, last_input32: u32, last_hook: u64) -> bool {
+    if last_hook == 0 {
+        return false; // хук ещё не получал событий с момента установки
+    }
+    let input_age = (now as u32).wrapping_sub(last_input32);
+    let hook_age = now.saturating_sub(last_hook);
+    input_age < 1_000 && hook_age > 5_000
 }
 
 /// Клавиши, которые оверлей забирает себе, пока виден.
@@ -164,8 +177,9 @@ unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
         // Свои же SendInput (Ctrl+A/C/V в фазе 2) не должны попадать в автомат.
         if (down || up) && !injected && !SUSPENDED.load(Ordering::Acquire) {
             let vk = kb.vkCode;
-            let hit = SET.with_borrow_mut(|s| {
-                s.on_key_at(vk, down, kb.time as u64).map(|(id, edge)| (id.to_owned(), edge))
+            let (hit, mods_held) = SET.with_borrow_mut(|s| {
+                let hit = s.on_key_at(vk, down, kb.time as u64).map(|(id, edge)| (id.to_owned(), edge));
+                (hit, s.modifiers_held())
             });
             if let Some((id, edge)) = hit {
                 match edge {
@@ -205,8 +219,9 @@ unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
                 }
                 return LRESULT(1);
             }
-            // Клавиши оверлея глотаем (и down, и up), пока он виден.
-            if PANEL_VISIBLE.load(Ordering::Acquire) && is_panel_key(vk) {
+            // Клавиши оверлея глотаем (и down, и up), пока он виден — но только
+            // без модификаторов: Alt+Tab, Ctrl+Tab, Ctrl+R, Win+стрелки — не наши.
+            if PANEL_VISIBLE.load(Ordering::Acquire) && is_panel_key(vk) && !mods_held {
                 if down {
                     if let Some(tx) = TX.get() {
                         let _ = tx.send(ControlMsg::Hotkey(HotkeyEvent::PanelKey(vk)));
@@ -356,4 +371,26 @@ pub fn spawn(tx: UnboundedSender<ControlMsg>, combos: Vec<(String, Vec<u32>)>) {
             }
         })
         .expect("не удалось запустить hotkey-поток");
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::hook_is_silent;
+
+    #[test]
+    fn detects_silent_hook_after_32bit_tick_wrap() {
+        // Аптайм > 49,7 дня: GetTickCount64 ушёл за 2^32, dwTime остался 32-битным.
+        let now: u64 = (1u64 << 32) + 500;
+        let last_input32: u32 = (now as u32).wrapping_sub(200); // ввод 200 мс назад
+        let last_hook: u64 = now - 6_000; // хук молчит 6 с
+        assert!(hook_is_silent(now, last_input32, last_hook));
+    }
+
+    #[test]
+    fn quiet_user_or_live_hook_is_not_silent() {
+        let now: u64 = 100_000;
+        assert!(!hook_is_silent(now, (now as u32) - 5_000, now - 6_000)); // ввода давно нет
+        assert!(!hook_is_silent(now, (now as u32) - 200, now - 300)); // хук живой
+        assert!(!hook_is_silent(now, (now as u32) - 200, 0)); // событий ещё не было
+    }
 }

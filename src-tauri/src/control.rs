@@ -80,8 +80,9 @@ pub enum ControlMsg {
     SelectStyle(String),
     /// `R` — сгенерировать заново тем же стилем.
     Regenerate,
-    /// Генерация завершилась (успех или ошибка) — снять хэндл.
-    Generated { gen: u64, result: Result<String, AiError> },
+    /// Генерация завершилась (успех или ошибка) — снять хэндл. `req` — номер
+    /// запроса в сессии: результат уже отменённого запроса отбрасывается.
+    Generated { gen: u64, req: u64, result: Result<String, AiError> },
     /// Enter в оверлее: вставить результат (или дождаться его и вставить).
     Paste,
     /// Хоткей/трей: вернуть предыдущий текст (повторно — снова результат).
@@ -180,6 +181,8 @@ struct Session {
     wanted_style: Option<String>,
     /// Текущая генерация: abort() = реальный обрыв HTTP-стрима.
     generation: Option<tokio::task::JoinHandle<()>>,
+    /// Номер текущего запроса генерации (см. `ControlMsg::Generated`).
+    req: u64,
     /// Последний полный результат.
     result: Option<String>,
     /// Enter нажат до конца генерации — вставить, как только результат придёт.
@@ -202,6 +205,9 @@ struct Control {
     last_show: Option<ShowPayload>,
     /// Растёт на каждый показ; отсекает устаревшие Captured/ToastExpired.
     gen: u64,
+    /// Растёт на каждый запрос генерации: смена стиля не меняет `gen`, а
+    /// результат уже отменённого запроса мог успеть лечь в канал.
+    req_seq: u64,
     /// Логическая высота панели (фронтенд присылает замер содержимого).
     panel_h: f32,
     /// Курсор на момент показа — от него пересчитывается позиция при росте.
@@ -381,7 +387,12 @@ impl Control {
             self.show_overlay(at, false);
             self.emit_text(&c);
         } else if self.state == PanelState::Ring {
-            self.hide();
+            // Кольцо убираем, но сессию оставляем: захват ещё идёт, и
+            // `Captured` покажет панель и запустит стиль, когда текст придёт.
+            let hwnd = self.hwnd;
+            let _ = self.app.run_on_main_thread(move || window::hide(hwnd));
+            self.state = PanelState::Hidden;
+            let _ = self.app.emit("overlay:hide", ());
         }
         self.maybe_start_generation();
     }
@@ -548,25 +559,28 @@ impl Control {
                 None
             };
             self.abort_generation();
+            self.req_seq += 1;
+            let req = self.req_seq;
             if let Some(s) = &mut self.session {
                 s.result = None;
+                s.req = req;
                 s.paste_selection = sp.only_selection;
                 s.caret = caret;
             }
             let gen = self.gen;
-            let _ = self.app.emit("rewrite:start", RewriteStart { gen, style_id: style_id.clone(), with_screenshot: false });
+            let _ = self.app.emit("rewrite:start", RewriteStart { gen, req, style_id: style_id.clone(), with_screenshot: false });
             let _ = self.app.emit(
                 "rewrite:done",
-                RewriteDone { gen, text: sp.shown, elapsed_ms: 0.0, first_chunk_ms: 0.0 },
+                RewriteDone { gen, req, text: sp.shown, elapsed_ms: 0.0, first_chunk_ms: 0.0 },
             );
-            let _ = self.tx.send(ControlMsg::Generated { gen, result: Ok(sp.paste) });
+            let _ = self.tx.send(ControlMsg::Generated { gen, req, result: Ok(sp.paste) });
             return;
         }
         let settings = Settings::load(&self.app);
         let Some(style) = settings.styles.iter().find(|st| st.id == style_id).cloned() else {
             let _ = self.app.emit(
                 "rewrite:error",
-                RewriteError { gen: self.gen, message: format!("Стиль «{style_id}» не найден") },
+                RewriteError { gen: self.gen, req: self.req_seq, message: format!("Стиль «{style_id}» не найден") },
             );
             return;
         };
@@ -605,9 +619,11 @@ impl Control {
         }
 
         self.abort_generation();
+        self.req_seq += 1;
+        let req_id = self.req_seq;
         let gen = self.gen;
         let with_screenshot = req.screenshot_jpeg_base64.is_some();
-        let _ = self.app.emit("rewrite:start", RewriteStart { gen, style_id: style.id.clone(), with_screenshot });
+        let _ = self.app.emit("rewrite:start", RewriteStart { gen, req: req_id, style_id: style.id.clone(), with_screenshot });
         println!(
             "[restyle] rewrite start: style={} model={} screenshot={with_screenshot} chars={}",
             style.id,
@@ -637,25 +653,26 @@ impl Control {
                             if post.is_none() {
                                 // Причёсывать нечем — перевод и есть результат.
                                 let elapsed_ms = t0.elapsed().as_secs_f32() * 1000.0;
-                                let _ = app.emit("rewrite:chunk", RewriteChunk { gen, text: translated.clone() });
+                                let _ = app.emit("rewrite:chunk", RewriteChunk { gen, req: req_id, text: translated.clone() });
                                 let _ = app.emit(
                                     "rewrite:done",
                                     RewriteDone {
                                         gen,
+                                        req: req_id,
                                         text: translated.clone(),
                                         elapsed_ms,
                                         first_chunk_ms: elapsed_ms,
                                     },
                                 );
-                                let _ = tx.send(ControlMsg::Generated { gen, result: Ok(translated) });
+                                let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Ok(translated) });
                                 return;
                             }
                             req.text = translated;
                         }
                         Err(e) => {
                             eprintln!("[restyle] DeepL: {e:?}");
-                            let _ = app.emit("rewrite:error", RewriteError { gen, message: e.user_message() });
-                            let _ = tx.send(ControlMsg::Generated { gen, result: Err(e) });
+                            let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: e.user_message() });
+                            let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(e) });
                             return;
                         }
                     },
@@ -672,14 +689,14 @@ impl Control {
             let key = match key_result {
                 Ok(Some(k)) => k,
                 Ok(None) => {
-                    let _ = app.emit("rewrite:error", RewriteError { gen, message: AiError::NoApiKey.user_message() });
-                    let _ = tx.send(ControlMsg::Generated { gen, result: Err(AiError::NoApiKey) });
+                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: AiError::NoApiKey.user_message() });
+                    let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(AiError::NoApiKey) });
                     return;
                 }
                 Err(e) => {
                     let err = AiError::Other(e);
-                    let _ = app.emit("rewrite:error", RewriteError { gen, message: err.user_message() });
-                    let _ = tx.send(ControlMsg::Generated { gen, result: Err(err) });
+                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: err.user_message() });
+                    let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(err) });
                     return;
                 }
             };
@@ -697,7 +714,7 @@ impl Control {
                         println!("[restyle] first chunk in {ms:.0} ms");
                     }
                     drop(g);
-                    let _ = app2.emit("rewrite:chunk", RewriteChunk { gen, text });
+                    let _ = app2.emit("rewrite:chunk", RewriteChunk { gen, req: req_id, text });
                 }
             });
             let result = provider.rewrite(&key, &req, ctx).await;
@@ -709,18 +726,19 @@ impl Control {
                     println!("[restyle] rewrite done in {elapsed_ms:.0} ms, {} chars", text.chars().count());
                     let _ = app.emit(
                         "rewrite:done",
-                        RewriteDone { gen, text: text.clone(), elapsed_ms, first_chunk_ms: first },
+                        RewriteDone { gen, req: req_id, text: text.clone(), elapsed_ms, first_chunk_ms: first },
                     );
                 }
                 Err(e) => {
                     eprintln!("[restyle] rewrite error: {e:?}");
-                    let _ = app.emit("rewrite:error", RewriteError { gen, message: e.user_message() });
+                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: e.user_message() });
                 }
             }
-            let _ = tx.send(ControlMsg::Generated { gen, result });
+            let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result });
         });
         if let Some(s) = &mut self.session {
             s.generation = Some(handle);
+            s.req = req_id;
             s.result = None;
             // Модель переписывает всё поле: длина другая, каретку не вернуть.
             s.paste_selection = false;
@@ -1034,6 +1052,7 @@ impl Control {
             started: at,
             wanted_style: Some(LAYOUT_ID.into()),
             generation: None,
+            req: 0,
             result: Some(sp.paste),
             paste_on_done: false,
             auto_paste: false,
@@ -1116,6 +1135,7 @@ impl Control {
             shot,
             started: at,
             generation: None,
+            req: 0,
             result: None,
             paste_on_done: false,
             auto_paste: quick && settings.auto_paste,
@@ -1252,9 +1272,13 @@ impl Control {
                 }
             }
             ControlMsg::Captured { gen, result } => {
-                if gen == self.gen && self.state == PanelState::Visible {
+                // Не только при видимой панели: при долгом нажатии она до развилки
+                // не показывается (state Hidden/Ring), а захват дольше 250 мс
+                // иначе терялся — панель зависала на «Читаю текст…».
+                if gen == self.gen && self.session.is_some() {
                     let at = self.session.as_ref().map(|s| s.started).unwrap_or_else(Instant::now);
-                    self.apply_capture(at, result, true);
+                    let visible = self.state == PanelState::Visible;
+                    self.apply_capture(at, result, visible);
                 }
             }
             ControlMsg::ToastExpired(gen) => {
@@ -1304,12 +1328,18 @@ impl Control {
                     self.maybe_start_generation();
                 }
             }
-            ControlMsg::Generated { gen, result } => {
+            ControlMsg::Generated { gen, req, result } => {
                 if gen != self.gen {
                     return;
                 }
                 let mut paste_now = false;
                 if let Some(s) = &mut self.session {
+                    if s.req != req {
+                        // Стиль сменили в момент, когда старый стрим уже кончился:
+                        // его результат не должен стать результатом нового запроса.
+                        println!("[restyle] generation #{req} устарела (текущая #{})", s.req);
+                        return;
+                    }
                     s.generation = None;
                     match result {
                         Ok(text) => {
@@ -1453,6 +1483,7 @@ pub fn spawn(
             show_started: None,
             last_show: None,
             gen: 0,
+            req_seq: 0,
             panel_h: PANEL_H,
             anchor: (0, 0),
             toast_hold: None,
