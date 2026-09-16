@@ -237,8 +237,15 @@ impl Worker {
         if let (true, Some(uia)) = (opts.prefer_uia, &self.uia) {
             match uia.write(text) {
                 Ok(true) => {
-                    if let Some((start, len)) = opts.caret {
-                        uia::select_range(start, len);
+                    match opts.caret {
+                        Some((start, len)) => {
+                            uia::select_range(start, len);
+                        }
+                        // Длина изменилась (результат модели): SetValue
+                        // оставляет каретку в начале поля — ставим в конец.
+                        None => {
+                            uia::caret_to_end();
+                        }
                     }
                     return Ok(PasteMethod::Uia);
                 }

@@ -111,6 +111,27 @@ pub fn select_range(start: i32, len: i32) -> bool {
     })
 }
 
+/// Каретку в конец текста элемента последнего чтения. После `SetValue` многие
+/// поля (Telegram, Блокнот) оставляют каретку в начале — как будто текст
+/// только что вставили и уехали на первую строку.
+pub fn caret_to_end() -> bool {
+    LAST_ELEMENT.with_borrow(|l| {
+        let Some(el) = l else { return false };
+        unsafe {
+            let Ok(u) = el.GetCurrentPattern(UIA_TextPatternId) else { return false };
+            let Ok(tp) = u.cast::<IUIAutomationTextPattern>() else { return false };
+            let Ok(r) = tp.DocumentRange() else { return false };
+            let Ok(anchor) = r.Clone() else { return false };
+            if r.MoveEndpointByRange(TextPatternRangeEndpoint_Start, &anchor, TextPatternRangeEndpoint_End).is_err() {
+                return false;
+            }
+            let ok = r.Select().is_ok();
+            println!("[restyle] каретка в конец: {ok}");
+            ok
+        }
+    })
+}
+
 #[derive(Debug)]
 pub enum UiaError {
     /// Элемент с фокусом — поле пароля: не читаем ни UIA, ни клипбордом.
