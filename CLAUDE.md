@@ -111,7 +111,13 @@ Git-коммиты — всегда на английском (глобальн�
    ждёт текст и решённый скриншот (Encoding → ждём `ScreenshotReady`), затем
    `tokio::spawn` таска с ключом из keyring; хэндл в `Session.generation`.
    Быстрый стиль (`style:<id>`) стартует сам; `select_style`/`regenerate` —
-   команды фронта. Модели (замер 12.09.2026 по живому ключу): `gemini-2.5-*`
+   команды фронта. Уточнения результата — ряд чипов под готовым текстом
+   («короче/длиннее/формальнее/проще» — зашитые `settings::refine_style`,
+   id `refine:<op>`, без кадра; плюс стили перевода пользователя): команда
+   `refine(op)` кладёт текущий результат в `Session.base_text`, и генерация
+   берёт его вместо текста поля; клик по стилю в основном ряду сбрасывает
+   `base_text` (стили всегда к исходнику), R повторяет уточнение на том же
+   входе; история/undo хранят исходник поля. Модели (замер 12.09.2026 по живому ключу): `gemini-2.5-*`
    недоступны новым ключам (404), дефолт `gemini-3.5-flash-lite` (первый чанк
    ≈0,7 с), пресет «точнее» `gemini-3.6-flash` (≈2,9 с при minimal thinking;
    без thinkingConfig ≈6,6 с). Константы `MODEL_LITE`/`MODEL_FLASH` в settings.rs.
@@ -210,14 +216,15 @@ toast?, capturing, targetExe}`), `overlay:hide`, `overlay:key` (vk),
 удержания у курсора; `menu:show` (масштаб экрана) / `menu:hide` — своё меню трея;
 `menu:format {scale, current}` — то же окно показывает список регистров.
 
-События `rewrite:start {gen, req, styleId, withScreenshot}` / `rewrite:chunk {gen, req, text}` /
+События `rewrite:start {gen, req, styleId, withScreenshot, refine?}` (`refine` —
+op или id стиля перевода: фронт не трогает подсветку основного ряда) / `rewrite:chunk {gen, req, text}` /
 `rewrite:done {gen, req, text, elapsedMs, firstChunkMs}` / `rewrite:error {gen, req, message}`;
 `gen` (u64 → TS number) есть и в `overlay:show` — фронт игнорирует чужие поколения;
 `req` — номер запроса внутри сессии (смена стиля `gen` не меняет): результат уже
 отменённой генерации отбрасывают и control-цикл (`Session.req`), и фронт.
 
 Команды: `panel_shown` (ack первого кадра — замер задержки), `frontend_ready`,
-`hide_overlay`, `select_style(styleId)`, `regenerate`, `paste_result`, `undo_last`, `set_hotkey_capture(on)`,
+`hide_overlay`, `select_style(styleId)`, `refine(op)`, `regenerate`, `paste_result`, `undo_last`, `set_hotkey_capture(on)`,
 `get_settings`, `save_settings` (нормализует и возвращает сохранённое),
 `hotkey_conflicts(settings)` (пары действий с одинаковой комбинацией; первая
 в паре — та, что реально сработает), `default_styles`, `get_history`,
@@ -317,7 +324,7 @@ CSS-переменные «R G B», новый хардкод цвета акц�
 (нормализация id и перечислений, конфликты хоткеев, комбо без модификатора),
 `textfx.rs` (регистр, раскладка EN↔RU/UK, вклейка выделения), `hotkey/combo.rs`
 (двойное нажатие модификатора), `hotkey/mod.rs` (watchdog с 32-битным переносом
-`dwTime`, `modifiers_held`). Всего 83 теста.
+`dwTime`, `modifiers_held`), `settings.rs` (`refine_style`). Всего 84 теста.
 Замеры на релизе — `scripts/perf_release.ps1`: считает CPU и память по всему
 дереву процессов (вебвью живут в отдельных `msedgewebview2.exe`) и КЛИКАЕТ в
 поле перед демо-хоткеем: `SendKeys('%')` для разблокировки `SetForegroundWindow`

@@ -26,7 +26,7 @@ use crate::ipc::{
 };
 use crate::screenshot::{self, Encoded, Mode};
 use crate::secrets;
-use crate::settings::{Settings, StyleKind};
+use crate::settings::{self, Settings, StyleKind, REFINE_PREFIX};
 use crate::translate;
 use crate::window::{self, CURSOR_OFFSET, PANEL_H, PANEL_W};
 
@@ -78,6 +78,9 @@ pub enum ControlMsg {
     ScreenshotReady { gen: u64, result: Result<Encoded, String> },
     /// Фронтенд выбрал стиль (кнопка/Tab/цифры) — запустить генерацию.
     SelectStyle(String),
+    /// Чип под результатом: уточнение (`shorter`…) или стиль перевода (id)
+    /// поверх текущего результата, а не текста поля.
+    Refine(String),
     /// `R` — сгенерировать заново тем же стилем.
     Regenerate,
     /// Генерация завершилась (успех или ошибка) — снять хэндл. `req` — номер
@@ -193,6 +196,10 @@ struct Session {
     paste_selection: bool,
     /// Вернуть каретку/выделение после вставки (единицы UIA).
     caret: Option<(i32, i32)>,
+    /// Вход для генерации вместо текста поля: предыдущий результат, когда
+    /// пользователь уточняет его чипом («короче», перевод). Выбор стиля в
+    /// основном ряду сбрасывает — стили всегда применяются к исходнику.
+    base_text: Option<String>,
 }
 
 struct Control {
@@ -568,7 +575,10 @@ impl Control {
                 s.caret = caret;
             }
             let gen = self.gen;
-            let _ = self.app.emit("rewrite:start", RewriteStart { gen, req, style_id: style_id.clone(), with_screenshot: false });
+            let _ = self.app.emit(
+                "rewrite:start",
+                RewriteStart { gen, req, style_id: style_id.clone(), with_screenshot: false, refine: None },
+            );
             let _ = self.app.emit(
                 "rewrite:done",
                 RewriteDone { gen, req, text: sp.shown, elapsed_ms: 0.0, first_chunk_ms: 0.0 },
@@ -577,7 +587,15 @@ impl Control {
             return;
         }
         let settings = Settings::load(&self.app);
-        let Some(style) = settings.styles.iter().find(|st| st.id == style_id).cloned() else {
+        // Уточнение: вход — предыдущий результат; стиль либо зашитый
+        // (`refine:shorter`), либо стиль перевода пользователя.
+        let base_text = s.base_text.clone();
+        let refine = base_text.as_ref().map(|_| style_id.strip_prefix(REFINE_PREFIX).unwrap_or(&style_id).to_string());
+        let style = match style_id.strip_prefix(REFINE_PREFIX) {
+            Some(op) => settings::refine_style(op),
+            None => settings.styles.iter().find(|st| st.id == style_id).cloned(),
+        };
+        let Some(style) = style else {
             let _ = self.app.emit(
                 "rewrite:error",
                 RewriteError { gen: self.gen, req: self.req_seq, message: format!("Стиль «{style_id}» не найден") },
@@ -608,7 +626,7 @@ impl Control {
             system_prompt: ai::system_prompt(self.app.path().app_config_dir().ok()),
             style_name: style.name.clone(),
             style_instruction: style.instruction.clone(),
-            text: captured.text.clone(),
+            text: base_text.unwrap_or_else(|| captured.text.clone()),
             screenshot_jpeg_base64: screenshot,
             model: settings.model.clone(),
         };
@@ -623,11 +641,15 @@ impl Control {
         let req_id = self.req_seq;
         let gen = self.gen;
         let with_screenshot = req.screenshot_jpeg_base64.is_some();
-        let _ = self.app.emit("rewrite:start", RewriteStart { gen, req: req_id, style_id: style.id.clone(), with_screenshot });
+        let _ = self.app.emit(
+            "rewrite:start",
+            RewriteStart { gen, req: req_id, style_id: style.id.clone(), with_screenshot, refine: refine.clone() },
+        );
         println!(
-            "[restyle] rewrite start: style={} model={} screenshot={with_screenshot} chars={}",
+            "[restyle] rewrite start: style={} model={} screenshot={with_screenshot} refine={} chars={}",
             style.id,
             req.model,
+            refine.is_some(),
             req.text.chars().count()
         );
 
@@ -1058,6 +1080,7 @@ impl Control {
             auto_paste: false,
             paste_selection: sp.only_selection,
             caret,
+            base_text: None,
         });
         window::switch_layout(hwnd, to.primary_lang());
         self.do_paste();
@@ -1141,6 +1164,7 @@ impl Control {
             auto_paste: quick && settings.auto_paste,
             paste_selection: false,
             caret: None,
+            base_text: None,
         });
         // `&mut rx`: по таймауту receiver остаётся у нас и уходит в фоновый таск.
         match tokio::time::timeout(CAPTURE_SOFT_DEADLINE, &mut rx).await {
@@ -1320,7 +1344,19 @@ impl Control {
                 }
                 if let Some(s) = &mut self.session {
                     s.wanted_style = Some(id);
+                    s.base_text = None;
                 }
+                self.maybe_start_generation();
+            }
+            ControlMsg::Refine(op) => {
+                if self.state != PanelState::Visible {
+                    return;
+                }
+                let Some(s) = &mut self.session else { return };
+                // Во время стрима результата ещё нет — уточнять нечего.
+                let Some(result) = s.result.clone() else { return };
+                s.base_text = Some(result);
+                s.wanted_style = Some(if settings::refine_style(&op).is_some() { format!("{REFINE_PREFIX}{op}") } else { op });
                 self.maybe_start_generation();
             }
             ControlMsg::Regenerate => {

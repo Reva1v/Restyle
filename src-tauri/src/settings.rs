@@ -235,6 +235,33 @@ pub fn builtin_styles() -> Vec<Style> {
     ]
 }
 
+/// Префикс id уточнения результата (`refine:shorter`) в `wanted_style`.
+pub const REFINE_PREFIX: &str = "refine:";
+
+/// Уточнения результата — ряд чипов под готовым текстом в панели. Инструкции
+/// зашиты, а не берутся из стилей пользователя: встроенные стили можно
+/// удалить, а «короче / формальнее» должны работать всегда. Кадр экрана не
+/// прикладывается — вход уже переписан, контекст ему не нужен, без кадра быстрее.
+pub fn refine_style(op: &str) -> Option<Style> {
+    let (name, instruction) = match op {
+        "shorter" => ("Shorter", "Make it noticeably shorter. Keep every fact; cut filler, repetition and hedging."),
+        "longer" => ("Longer", "Expand it: add natural detail, transitions and clarity without inventing new facts."),
+        "formal" => ("More formal", "Make it more formal and professional. Polite, precise, no slang or emoji."),
+        "simpler" => (
+            "Simpler",
+            "Make it simpler and easier to read: plain words, short sentences, one idea per sentence. Keep every fact.",
+        ),
+        _ => return None,
+    };
+    Some(Style {
+        id: format!("{REFINE_PREFIX}{op}"),
+        name: name.into(),
+        instruction: instruction.into(),
+        screenshot: false,
+        ..Style::default()
+    })
+}
+
 /// Пресеты акцентного цвета (сами цвета — в `src/lib/theme.ts`).
 pub const ACCENTS: &[&str] = &["amber", "blue", "green", "violet", "rose", "teal"];
 
@@ -758,5 +785,18 @@ mod tests {
         let partial: Settings = serde_json::from_str(r#"{"autostart":true}"#).unwrap();
         assert!(partial.autostart);
         assert_eq!(partial.styles.len(), 8); // 5 переписывающих + 3 перевода
+    }
+
+    #[test]
+    fn refine_ops_are_fixed_and_without_screenshot() {
+        for op in ["shorter", "longer", "formal", "simpler"] {
+            let st = refine_style(op).expect(op);
+            assert_eq!(st.id, format!("refine:{op}"));
+            assert!(!st.screenshot, "{op}: кадр экрана уточнению не нужен");
+            assert!(!st.instruction.is_empty());
+            assert_eq!(st.kind, StyleKind::Prompt);
+        }
+        assert!(refine_style("louder").is_none());
+        assert!(refine_style("").is_none());
     }
 }

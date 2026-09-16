@@ -4,23 +4,8 @@ import type { T } from "../../lib/i18n";
 import { comboLabel } from "../../lib/hotkey";
 import HotkeyField from "../HotkeyField";
 import { Button, Caption, DraftField, Select, Toggle } from "../../ui/kit";
+import { LANGS } from "../../lib/langs";
 
-/** Языки DeepL: коды как в `settings.rs` (TRANSLATE_LANGS). */
-const LANGS: { value: string; label: string }[] = [
-  { value: "EN-US", label: "English (US)" },
-  { value: "EN-GB", label: "English (UK)" },
-  { value: "RU", label: "Русский" },
-  { value: "UK", label: "Українська" },
-  { value: "DE", label: "Deutsch" },
-  { value: "FR", label: "Français" },
-  { value: "ES", label: "Español" },
-  { value: "IT", label: "Italiano" },
-  { value: "PL", label: "Polski" },
-  { value: "PT-PT", label: "Português" },
-  { value: "TR", label: "Türkçe" },
-  { value: "ZH", label: "中文" },
-  { value: "JA", label: "日本語" },
-];
 
 /**
  * «Стили» (макет, раздел 03): слева список, справа редактор выбранного.

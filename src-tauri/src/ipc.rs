@@ -47,6 +47,10 @@ pub struct RewriteStart {
     pub req: u64,
     pub style_id: String,
     pub with_screenshot: bool,
+    /// Уточнение результата (чип под готовым текстом): `shorter` и т.п. или id
+    /// стиля перевода. Вход — предыдущий результат, а не текст поля; фронт
+    /// не трогает подсветку основного ряда.
+    pub refine: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]

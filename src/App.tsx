@@ -11,7 +11,8 @@ import {
 } from "./lib/ipc";
 import { useAppShell } from "./lib/theme";
 import { comboLabel } from "./lib/hotkey";
-import { FMT_KEYS, parseFmt, type Fmt, type T } from "./lib/i18n";
+import { FMT_KEYS, parseFmt, type Fmt, type Key, type T } from "./lib/i18n";
+import { langLabel } from "./lib/langs";
 
 type Gen = {
   state: "idle" | "streaming" | "done" | "error";
@@ -23,6 +24,16 @@ type Gen = {
 
 /** До скольких чипов работают цифры 1–9; остальные — мышью и Tab. */
 const CHIPS_NUMBERED = 9;
+
+/** Уточнения результата: инструкции зашиты в бэкенде (`settings::refine_style`). */
+const REFINE_OPS = ["shorter", "longer", "formal", "simpler"] as const;
+const REFINE_KEYS: Record<(typeof REFINE_OPS)[number], Key> = {
+  shorter: "refine.shorter",
+  longer: "refine.longer",
+  formal: "refine.formal",
+  simpler: "refine.simpler",
+};
+type Style = Settings["styles"][number];
 
 
 /**
@@ -49,6 +60,8 @@ export default function App() {
   /** Выбранный регистр (вместо стиля); открыт ли список регистров. */
   const [fmt, setFmt] = useState<Fmt | null>(null);
   const [fmtOpen, setFmtOpen] = useState(false);
+  /** Активное уточнение результата: `shorter`… или id стиля перевода. */
+  const [refine, setRefine] = useState<string | null>(null);
   const fmtBtnRef = useRef<HTMLButtonElement>(null);
   const genRef = useRef(0);
   /** Номер запроса внутри сессии: чанки и done отменённой генерации игнорируются. */
@@ -86,6 +99,7 @@ export default function App() {
         genRef.current = p.gen;
         setRing(null);
         setFmt(null);
+        setRefine(null);
         setPayload(p);
         setText(null);
         setShot(null);
@@ -103,6 +117,14 @@ export default function App() {
       events.onRewriteStart((p) => {
         if (p.gen !== genRef.current) return;
         reqRef.current = p.req;
+        if (p.refine) {
+          // Уточнение: вход — предыдущий результат, подсветка основного ряда
+          // остаётся на стиле, с которого всё началось.
+          setRefine(p.refine);
+          setGen({ state: "streaming", text: "" });
+          return;
+        }
+        setRefine(null);
         // Генерацию мог запустить и бэкенд (быстрый стиль, повтор) — подсветку
         // берём из события, а не только из собственного клика.
         const f = parseFmt(p.styleId);
@@ -206,6 +228,11 @@ export default function App() {
 
   const quick = !!payload?.styleId && gen.state !== "idle" && selected !== null;
   const style = selected !== null ? styles[selected] : null;
+  const resultTitle = refine
+    ? refineTitle(t, refine, styles)
+    : fmt
+      ? t(FMT_KEYS[fmt])
+      : (style?.name ?? "");
   // Показываем все стили: панель растёт по содержимому, и прятать их за
   // «Ещё N» незачем — места снизу всё равно достаточно.
   const chipIdx = styles.map((_, i) => i);
@@ -259,7 +286,7 @@ export default function App() {
                 transition={{ duration: 0.16, ease: "easeOut" }}
                 className="overflow-hidden"
               >
-                <Result t={t} gen={gen} styleName={fmt ? t(FMT_KEYS[fmt]) : (style?.name ?? "")} quick={quick} />
+                <Result t={t} gen={gen} styleName={resultTitle} quick={quick} refine={refine} styles={styles} />
               </motion.div>
             )}
           </AnimatePresence>
@@ -412,7 +439,29 @@ function FormatButton({
   );
 }
 
-function Result({ t, gen, styleName, quick }: { t: T; gen: Gen; styleName: string; quick: boolean }) {
+/** Подпись результата для уточнения: «Короче» или язык стиля перевода. */
+function refineTitle(t: T, refine: string, styles: Style[]): string {
+  const op = REFINE_OPS.find((o) => o === refine);
+  if (op) return t(REFINE_KEYS[op]);
+  const st = styles.find((s) => s.id === refine);
+  return st ? (st.kind === "translate" ? langLabel(st.targetLang) : st.name) : refine;
+}
+
+function Result({
+  t,
+  gen,
+  styleName,
+  quick,
+  refine,
+  styles,
+}: {
+  t: T;
+  gen: Gen;
+  styleName: string;
+  quick: boolean;
+  refine: string | null;
+  styles: Style[];
+}) {
   const done = gen.state === "done";
   const err = gen.state === "error";
   if (quick) {
@@ -453,7 +502,85 @@ function Result({ t, gen, styleName, quick }: { t: T; gen: Gen; styleName: strin
         {gen.state === "streaming" && <Caret />}
       </p>
       {err && <p className="m-0 text-xs text-danger-ink dark:text-danger">{gen.message}</p>}
+      {(done || (gen.state === "streaming" && refine !== null)) && (
+        <RefineRow t={t} gen={gen} refine={refine} styles={styles} />
+      )}
     </div>
+  );
+}
+
+/**
+ * Ряд под готовым результатом: «Уточнить: короче · длиннее · формальнее ·
+ * проще» и «Перевести на: …» из стилей перевода пользователя. Каждый чип
+ * отправляет текущий результат на новый проход; во время стрима чипы неактивны —
+ * уточнять ещё нечего.
+ */
+function RefineRow({ t, gen, refine, styles }: { t: T; gen: Gen; refine: string | null; styles: Style[] }) {
+  const translate = styles.filter((s) => s.kind === "translate");
+  const busy = gen.state !== "done";
+  return (
+    <div className="flex flex-wrap items-center gap-[6px] border-t border-black/[.08] pt-[10px] dark:border-white/[.07]">
+      <RefineCaption>{t("refine.label")}</RefineCaption>
+      {REFINE_OPS.map((op) => (
+        <RefineChip
+          key={op}
+          label={t(REFINE_KEYS[op])}
+          active={refine === op}
+          disabled={busy}
+          onClick={() => void commands.refine(op)}
+        />
+      ))}
+      {translate.length > 0 && (
+        <>
+          <RefineCaption className="ml-1">{t("refine.translate")}</RefineCaption>
+          {translate.map((s) => (
+            <RefineChip
+              key={s.id}
+              label={langLabel(s.targetLang)}
+              active={refine === s.id}
+              disabled={busy}
+              onClick={() => void commands.refine(s.id)}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function RefineCaption({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <span className={`font-mono text-[10px] uppercase leading-none tracking-[.08em] text-paper-dim dark:text-ink-text/55 ${className}`}>
+      {children}
+    </span>
+  );
+}
+
+function RefineChip({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <motion.button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      whileTap={disabled ? undefined : { scale: 0.97 }}
+      className={`rounded-[6px] border px-2 py-[5px] text-[12px] font-medium leading-none transition-colors disabled:cursor-default disabled:opacity-50 ${
+        active
+          ? "border-amber-deep bg-amber-deep/[.13] text-amber-ink dark:border-amber/45 dark:bg-amber/[.16] dark:text-amber-soft"
+          : "border-black/[.12] bg-white text-[#33363c] hover:enabled:bg-black/[.03] dark:border-white/[.08] dark:bg-white/5 dark:text-ink-text/80 dark:hover:enabled:bg-white/[.09]"
+      }`}
+    >
+      {label}
+    </motion.button>
   );
 }
 

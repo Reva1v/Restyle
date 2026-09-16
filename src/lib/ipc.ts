@@ -72,6 +72,8 @@ export const commands = {
   hideOverlay: () => invoke("hide_overlay"),
   /** выбрать стиль — запускает (пере)генерацию */
   selectStyle: (styleId: string) => invoke("select_style", { styleId }),
+  /** чип под результатом: уточнение (`shorter`…) или стиль перевода (id) поверх результата */
+  refine: (op: string) => invoke("refine", { op }),
   regenerate: () => invoke("regenerate"),
   /** Enter: вставить результат (или дождаться его) */
   pasteResult: () => invoke("paste_result"),

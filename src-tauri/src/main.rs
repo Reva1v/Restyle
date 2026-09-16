@@ -50,6 +50,11 @@ fn select_style(tx: State<CtrlTx>, style_id: String) {
 }
 
 #[tauri::command]
+fn refine(tx: State<CtrlTx>, op: String) {
+    let _ = tx.0.send(ControlMsg::Refine(op));
+}
+
+#[tauri::command]
 fn regenerate(tx: State<CtrlTx>) {
     let _ = tx.0.send(ControlMsg::Regenerate);
 }
@@ -595,6 +600,7 @@ fn main() {
             frontend_ready,
             hide_overlay,
             select_style,
+            refine,
             regenerate,
             paste_result,
             undo_last,
