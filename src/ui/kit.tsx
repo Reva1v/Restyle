@@ -479,13 +479,13 @@ export function Segmented<V extends string>({
   fill?: boolean;
 }) {
   return (
-    <span className={`flex gap-1 ${fill ? "w-full" : ""}`}>
+    <span className={`flex ${fill ? "h-full w-full gap-0" : "gap-1"}`}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          className={`rounded-md px-3 py-1.5 text-xs transition-colors ${fill ? "flex-1 text-center" : ""} ${
+          className={`rounded-md px-3 py-1.5 text-xs transition-colors ${fill ? "h-full flex-1 rounded-lg text-center" : ""} ${
             o.value === value
               ? "border border-black/[.14] bg-white font-medium text-paper-text dark:border-white/15 dark:bg-white/10 dark:text-ink-text"
               : "text-paper-dim hover:text-paper-text dark:text-ink-text/55 dark:hover:text-ink-text"

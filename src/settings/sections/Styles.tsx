@@ -273,21 +273,19 @@ export default function Styles({
             <Caption>{t("styles.name")}</Caption>
             <DraftField className="h-[36px] py-0 text-[14px] font-medium" value={style.name} onCommit={(v) => patch({ name: v })} />
           </label>
-          <div className="flex items-center gap-3">
-            <Caption>{t("styles.kind")}</Caption>
-            <div className="flex h-[32px] min-w-0 flex-1 items-center rounded-lg border border-black/10 bg-black/[.03] px-[3px] dark:border-white/[.08] dark:bg-white/[.04]">
-              <Segmented<StyleKind>
-                fill
-                value={style.kind}
-                onChange={(v) =>
-                  patch({ kind: v, targetLang: v === "translate" && !style.targetLang ? "EN-US" : style.targetLang })
-                }
-                options={[
-                  { value: "prompt", label: t("styles.kindPrompt") },
-                  { value: "translate", label: t("styles.kindTranslate") },
-                ]}
-              />
-            </div>
+          {/* Переключатель типа — сам себе рамка: без подписи и внутренних отступов. */}
+          <div className="flex h-[34px] w-full items-center overflow-hidden rounded-lg border border-black/10 bg-black/[.03] dark:border-white/[.08] dark:bg-white/[.04]">
+            <Segmented<StyleKind>
+              fill
+              value={style.kind}
+              onChange={(v) =>
+                patch({ kind: v, targetLang: v === "translate" && !style.targetLang ? "EN-US" : style.targetLang })
+              }
+              options={[
+                { value: "prompt", label: t("styles.kindPrompt") },
+                { value: "translate", label: t("styles.kindTranslate") },
+              ]}
+            />
           </div>
 
           {style.kind === "translate" && (
