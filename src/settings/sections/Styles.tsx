@@ -275,8 +275,9 @@ export default function Styles({
           </label>
           <div className="flex items-center gap-3">
             <Caption>{t("styles.kind")}</Caption>
-            <div className="flex h-[32px] items-center rounded-lg border border-black/10 bg-black/[.03] px-[3px] dark:border-white/[.08] dark:bg-white/[.04]">
+            <div className="flex h-[32px] min-w-0 flex-1 items-center rounded-lg border border-black/10 bg-black/[.03] px-[3px] dark:border-white/[.08] dark:bg-white/[.04]">
               <Segmented<StyleKind>
+                fill
                 value={style.kind}
                 onChange={(v) =>
                   patch({ kind: v, targetLang: v === "translate" && !style.targetLang ? "EN-US" : style.targetLang })
@@ -325,7 +326,7 @@ export default function Styles({
           >
             <DraftField
               multiline
-              className={`max-h-[300px] resize-y leading-relaxed ${style.kind === "translate" ? "min-h-[80px]" : "min-h-[104px]"}`}
+              className={`max-h-[300px] resize-y leading-relaxed ${style.kind === "translate" ? "min-h-[76px]" : "min-h-[96px]"}`}
               placeholder={t("styles.placeholder")}
               value={style.instruction}
               onCommit={(v) => patch({ instruction: v })}

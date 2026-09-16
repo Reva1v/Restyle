@@ -470,19 +470,22 @@ export function Segmented<V extends string>({
   value,
   options,
   onChange,
+  fill = false,
 }: {
   value: V;
   options: { value: V; label: string }[];
   onChange: (v: V) => void;
+  /** На всю ширину контейнера, кнопки поровну. */
+  fill?: boolean;
 }) {
   return (
-    <span className="flex gap-1">
+    <span className={`flex gap-1 ${fill ? "w-full" : ""}`}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
+          className={`rounded-md px-3 py-1.5 text-xs transition-colors ${fill ? "flex-1 text-center" : ""} ${
             o.value === value
               ? "border border-black/[.14] bg-white font-medium text-paper-text dark:border-white/15 dark:bg-white/10 dark:text-ink-text"
               : "text-paper-dim hover:text-paper-text dark:text-ink-text/55 dark:hover:text-ink-text"
