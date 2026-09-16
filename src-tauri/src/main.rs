@@ -336,6 +336,53 @@ fn default_styles() -> Vec<settings::Style> {
     settings::builtin_styles()
 }
 
+/// Экспорт всех стилей в JSON через диалог сохранения. `Ok(false)` — отменено.
+/// Диалог блокирующий, поэтому команда `async` (не на главном потоке).
+#[tauri::command]
+async fn export_styles(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter("Restyle styles", &["json"])
+        .set_file_name("restyle-styles.json")
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let file = settings::StylesFile { restyle: settings::STYLES_FILE_VERSION, styles: Settings::load(&app).styles };
+    let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("{}: {e}", path.display()))?;
+    println!("[restyle] экспорт стилей: {} шт.", file.styles.len());
+    Ok(true)
+}
+
+/// Импорт стилей из JSON: добавляются к существующим (см. `merge_imported`),
+/// настройки сохраняются как из окна. `Ok(None)` — отменено; иначе сколько
+/// стилей добавлено.
+#[tauri::command]
+async fn import_styles(app: tauri::AppHandle) -> Result<Option<usize>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(path) = app.dialog().file().add_filter("Restyle styles", &["json"]).blocking_pick_file() else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(|e| e.to_string())?;
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let file: settings::StylesFile =
+        serde_json::from_str(&raw).map_err(|_| "Это не файл стилей Restyle".to_string())?;
+    if file.restyle > settings::STYLES_FILE_VERSION {
+        return Err(format!("Файл стилей новее приложения (версия {})", file.restyle));
+    }
+    let mut settings = Settings::load(&app);
+    let added = settings::merge_imported(&mut settings.styles, file.styles);
+    println!("[restyle] импорт стилей: +{added}");
+    if added > 0 {
+        save_settings(app, settings);
+    }
+    Ok(Some(added))
+}
+
 /// Пары действий с одинаковыми комбинациями — окно настроек подсвечивает их.
 #[tauri::command]
 fn hotkey_conflicts(settings: Settings) -> Vec<(String, String)> {
@@ -489,6 +536,7 @@ fn main() {
             None,
         ))
         .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let settings = Settings::load(app.handle());
 
@@ -623,6 +671,8 @@ fn main() {
             save_settings,
             hotkey_conflicts,
             default_styles,
+            export_styles,
+            import_styles,
             get_history,
             copy_history,
             clear_history,

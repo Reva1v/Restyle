@@ -235,6 +235,44 @@ pub fn builtin_styles() -> Vec<Style> {
     ]
 }
 
+/// Файл обмена стилями (кнопки «Экспорт»/«Импорт» в разделе стилей).
+/// `restyle` — версия формата: чужой JSON без этого поля не принимаем.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StylesFile {
+    pub restyle: u32,
+    pub styles: Vec<Style>,
+}
+
+pub const STYLES_FILE_VERSION: u32 = 1;
+
+/// Добавить импортированные стили к существующим. Хоткеи сбрасываются
+/// (чужой файл не должен перехватывать комбинации), `builtin` снимается,
+/// id очищается — `normalize` выдаст его из имени и разведёт коллизии.
+/// Точные дубли (имя, инструкция, тип, язык) пропускаются. Возвращает,
+/// сколько стилей добавлено.
+pub fn merge_imported(existing: &mut Vec<Style>, imported: Vec<Style>) -> usize {
+    let mut added = 0;
+    for mut st in imported {
+        st.name = st.name.trim().to_string();
+        st.instruction = st.instruction.trim().to_string();
+        if st.name.is_empty() && st.instruction.is_empty() {
+            continue;
+        }
+        let dup = existing.iter().any(|e| {
+            e.name == st.name && e.instruction == st.instruction && e.kind == st.kind && e.target_lang == st.target_lang
+        });
+        if dup {
+            continue;
+        }
+        st.id = String::new();
+        st.hotkey = None;
+        st.builtin = false;
+        existing.push(st);
+        added += 1;
+    }
+    added
+}
+
 /// Префикс id уточнения результата (`refine:shorter`) в `wanted_style`.
 pub const REFINE_PREFIX: &str = "refine:";
 
@@ -798,5 +836,46 @@ mod tests {
         }
         assert!(refine_style("louder").is_none());
         assert!(refine_style("").is_none());
+    }
+
+    #[test]
+    fn import_merges_without_hotkeys_and_duplicates() {
+        let mut have = builtin_styles();
+        let n_before = have.len();
+        let imported = vec![
+            // точный дубль встроенного — пропускается
+            Style { id: "x".into(), name: "Formal".into(), instruction: have[0].instruction.clone(), ..Style::default() },
+            Style {
+                id: "formal".into(), // коллизия id со встроенным
+                name: " Formal ".into(),
+                instruction: "Other instruction".into(),
+                hotkey: Some(HotkeyCombo { ctrl: true, alt: true, key: 0x46, ..HotkeyCombo::default() }),
+                builtin: true,
+                ..Style::default()
+            },
+            Style { name: "  ".into(), instruction: "".into(), ..Style::default() }, // пустой
+        ];
+        assert_eq!(merge_imported(&mut have, imported), 1);
+        assert_eq!(have.len(), n_before + 1);
+        let st = have.last().unwrap();
+        assert_eq!(st.name, "Formal");
+        assert!(st.hotkey.is_none(), "хоткей из чужого файла сброшен");
+        assert!(!st.builtin);
+        assert!(st.id.is_empty(), "id выдаёт normalize");
+
+        let mut s = Settings { styles: have, ..Settings::default() };
+        s.normalize();
+        let ids: Vec<&str> = s.styles.iter().map(|x| x.id.as_str()).collect();
+        assert!(ids.contains(&"formal-2"), "{ids:?}");
+        assert!(!s.styles.last().unwrap().builtin);
+    }
+
+    #[test]
+    fn styles_file_roundtrip() {
+        let f = StylesFile { restyle: STYLES_FILE_VERSION, styles: builtin_styles() };
+        let json = serde_json::to_string(&f).unwrap();
+        let back: StylesFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.restyle, 1);
+        assert_eq!(back.styles, builtin_styles());
     }
 }

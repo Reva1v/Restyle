@@ -29,7 +29,8 @@ Windows-приложение (10 20H2+ / 11): пользователь печа�
 - `keyring` — API-ключи (Gemini и DeepL) только в Windows Credential Manager,
   никогда в JSON/фронте
 - `tauri-plugin-store` (settings.json, ключ `settings`), `tauri-plugin-autostart`,
-  `tauri-plugin-single-instance`, `window-vibrancy`
+  `tauri-plugin-single-instance`, `tauri-plugin-dialog` (только Rust-API:
+  импорт/экспорт стилей), `window-vibrancy`
 - Генерация TS-типов из Rust: `ts-rs` → `src/bindings/` (руками не править)
 - Пакетный менеджер: pnpm
 
@@ -235,6 +236,11 @@ op или id стиля перевода: фронт не трогает под�
 `list_models` (каталог моделей ключа через ListModels, фильтр по
 `generateContent` и по именам — картинки/tts/эмбеддинги отсеиваются),
 `running_apps` (видимые окна → exe + заголовок, для списков процессов),
+`export_styles` / `import_styles` (async: системные диалоги `tauri-plugin-dialog`
+на бэкенде, файл `{restyle: 1, styles: [...]}`; импорт добавляет к существующим
+через `settings::merge_imported` — хоткеи сбрасываются, `builtin` снимается, точные
+дубли пропускаются, id разводит `normalize`; сохранение как из окна, фронт узнаёт
+по `settings-changed`),
 `set_deepl_key`/`has_deepl_key`/`clear_deepl_key`/`test_deepl_key` (проверка +
 остаток квоты), `exit_app`, `close_tray_menu`, `resize_menu(height)`, `open_format_menu(left, top, bottom, current)` (список регистров
 в окне меню), `open_url(url)` (ShellExecute, белый список github.com / www.deepl.com /
@@ -324,7 +330,8 @@ CSS-переменные «R G B», новый хардкод цвета акц�
 (нормализация id и перечислений, конфликты хоткеев, комбо без модификатора),
 `textfx.rs` (регистр, раскладка EN↔RU/UK, вклейка выделения), `hotkey/combo.rs`
 (двойное нажатие модификатора), `hotkey/mod.rs` (watchdog с 32-битным переносом
-`dwTime`, `modifiers_held`), `settings.rs` (`refine_style`). Всего 84 теста.
+`dwTime`, `modifiers_held`), `settings.rs` (`refine_style`, `merge_imported`,
+`StylesFile`). Всего 86 тестов.
 Замеры на релизе — `scripts/perf_release.ps1`: считает CPU и память по всему
 дереву процессов (вебвью живут в отдельных `msedgewebview2.exe`) и КЛИКАЕТ в
 поле перед демо-хоткеем: `SendKeys('%')` для разблокировки `SetForegroundWindow`

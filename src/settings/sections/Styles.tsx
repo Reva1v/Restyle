@@ -6,6 +6,9 @@ import HotkeyField from "../HotkeyField";
 import { Button, Caption, DraftField, Select, Toggle } from "../../ui/kit";
 import { LANGS } from "../../lib/langs";
 
+/** Ссылка-кнопка в шапке списка (как «Добавить»). */
+const LINK = "text-[11.5px] font-medium text-amber-ink hover:underline dark:text-amber";
+
 
 /**
  * «Стили» (макет, раздел 03): слева список, справа редактор выбранного.
@@ -30,6 +33,8 @@ export default function Styles({
   const [drag, setDrag] = useState<number | null>(null);
   /** Строка, над которой сейчас висит перетаскиваемая: рисуем линию вставки. */
   const [over, setOver] = useState<number | null>(null);
+  /** Итог последнего импорта/экспорта: строка под кнопками, не тост. */
+  const [ioNote, setIoNote] = useState<{ text: string; error: boolean } | null>(null);
   useEffect(() => {
     void commands.defaultStyles().then(setDefaults);
   }, []);
@@ -68,6 +73,27 @@ export default function Styles({
   function remove() {
     apply({ ...settings, styles: settings.styles.filter((_, i) => i !== selected) });
     setSelected((i) => Math.max(0, i - 1));
+  }
+
+  /** Диалоги и файлы — на бэкенде; сохранённые настройки придут событием. */
+  async function importStyles() {
+    setIoNote(null);
+    try {
+      const n = await commands.importStyles();
+      if (n === null) return;
+      setIoNote({ text: n > 0 ? t("styles.imported", { n }) : t("styles.importedNone"), error: false });
+    } catch (e) {
+      setIoNote({ text: String(e), error: true });
+    }
+  }
+
+  async function exportStyles() {
+    setIoNote(null);
+    try {
+      await commands.exportStyles();
+    } catch (e) {
+      setIoNote({ text: String(e), error: true });
+    }
   }
 
   /** Удалённые встроенные — обратно в список, в исходном порядке. */
@@ -171,7 +197,13 @@ export default function Styles({
             {t("common.add")}
           </button>
         </div>
-        <div className="flex items-baseline gap-2 px-4">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4">
+          <button type="button" onClick={() => void importStyles()} className={LINK}>
+            {t("styles.import")}
+          </button>
+          <button type="button" onClick={() => void exportStyles()} className={LINK}>
+            {t("styles.export")}
+          </button>
           {defaults.some((d) => !settings.styles.some((s) => s.id === d.id)) && (
             <button
               type="button"
@@ -182,6 +214,15 @@ export default function Styles({
             </button>
           )}
         </div>
+        {ioNote && (
+          <span
+            className={`px-4 pb-1 text-[10.5px] leading-snug ${
+              ioNote.error ? "text-danger-ink dark:text-danger" : "text-paper-dim dark:text-ink-text/60"
+            }`}
+          >
+            {ioNote.text}
+          </span>
+        )}
         <span className="px-4 pb-2 text-[10.5px] leading-snug text-paper-dim dark:text-ink-text/45">
           {t("styles.chips")}
         </span>

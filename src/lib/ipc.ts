@@ -93,6 +93,11 @@ export const commands = {
     invoke("hotkey_conflicts", { settings }),
   /** встроенные стили как в коробке — для кнопки «вернуть» */
   defaultStyles: (): Promise<Style[]> => invoke("default_styles"),
+  /** все стили в JSON через диалог сохранения; false — отменено */
+  exportStyles: (): Promise<boolean> => invoke("export_styles"),
+  /** стили из JSON добавляются к существующим; null — отменено, иначе сколько добавлено.
+   *  Сохранённые настройки приходят событием settings-changed */
+  importStyles: (): Promise<number | null> => invoke("import_styles"),
   /** последние переписывания, новые первыми */
   getHistory: (): Promise<HistoryItem[]> => invoke("get_history"),
   /** положить результат записи в буфер обмена */

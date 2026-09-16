@@ -63,6 +63,10 @@ const RU = {
   // --- стили ---
   "styles.groupBuiltin": "Встроенные",
   "styles.restoreBuiltin": "Вернуть удалённые встроенные",
+  "styles.import": "Импорт",
+  "styles.export": "Экспорт",
+  "styles.imported": "Добавлено: {n}",
+  "styles.importedNone": "Новых стилей нет — все уже есть",
   "styles.groupCustom": "Свои",
   "styles.order": "Перетащи строку, чтобы поменять порядок",
   "styles.chips": "Все стили видны в панели; цифры 1–9 — у первых девяти, в этом порядке",
@@ -326,6 +330,10 @@ const UK: Record<Key, string> = {
 
   "styles.groupBuiltin": "Вбудовані",
   "styles.restoreBuiltin": "Повернути видалені вбудовані",
+  "styles.import": "Імпорт",
+  "styles.export": "Експорт",
+  "styles.imported": "Додано: {n}",
+  "styles.importedNone": "Нових стилів немає — усі вже є",
   "styles.groupCustom": "Свої",
   "styles.order": "Перетягни рядок, щоб змінити порядок",
   "styles.chips": "Усі стилі видно в панелі; цифри 1–9 — у перших дев’яти, у цьому порядку",
@@ -575,6 +583,10 @@ const EN: Record<Key, string> = {
 
   "styles.groupBuiltin": "Built-in",
   "styles.restoreBuiltin": "Restore deleted built-ins",
+  "styles.import": "Import",
+  "styles.export": "Export",
+  "styles.imported": "Added: {n}",
+  "styles.importedNone": "Nothing new — all of them are already here",
   "styles.groupCustom": "Yours",
   "styles.order": "Drag a row to reorder",
   "styles.chips": "All styles show in the panel; keys 1–9 pick the first nine, in this order",
