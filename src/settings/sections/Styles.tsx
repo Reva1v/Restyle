@@ -274,7 +274,7 @@ export default function Styles({
             <DraftField className="h-[36px] py-0 text-[14px] font-medium" value={style.name} onCommit={(v) => patch({ name: v })} />
           </label>
           {/* Переключатель типа — сам себе рамка: без подписи и внутренних отступов. */}
-          <div className="flex h-[34px] w-full items-center overflow-hidden rounded-lg border border-black/10 bg-black/[.03] dark:border-white/[.08] dark:bg-white/[.04]">
+          <div className="flex h-[34px] w-full flex-none items-center overflow-hidden rounded-lg border border-black/10 bg-black/[.03] dark:border-white/[.08] dark:bg-white/[.04]">
             <Segmented<StyleKind>
               fill
               value={style.kind}
@@ -333,7 +333,7 @@ export default function Styles({
 
           {/* Поведение: хоткей строкой на всю ширину (подпись + поле), ниже —
               тумблер скриншота. Одна карточка, чтобы не плодить рамки. */}
-          <div className="flex flex-col divide-y divide-black/[.08] rounded-lg border border-black/10 bg-white dark:divide-white/[.07] dark:border-white/[.08] dark:bg-white/[.04]">
+          <div className="flex flex-none flex-col divide-y divide-black/[.08] rounded-lg border border-black/10 bg-white dark:divide-white/[.07] dark:border-white/[.08] dark:bg-white/[.04]">
             <div className="flex flex-col gap-2 p-3">
               <div className="flex flex-col gap-[3px]">
                 <span className="text-[13px] font-medium leading-tight text-paper-text dark:text-ink-text">{t("styles.hotkeyTitle")}</span>
@@ -350,7 +350,7 @@ export default function Styles({
             </label>
           </div>
 
-          <div className="mt-auto flex items-center gap-3 border-t border-black/[.08] pt-3 dark:border-white/[.07]">
+          <div className="mt-auto flex flex-none items-center gap-3 border-t border-black/[.08] pt-3 dark:border-white/[.07]">
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-paper-soft dark:text-ink-text/40">
               id: {style.id || "…"}
             </span>
@@ -378,7 +378,7 @@ export default function Styles({
 /** Карточка редактора: заголовок, подсказка и содержимое. */
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <div className="flex flex-col gap-2.5 rounded-lg border border-black/10 bg-white p-3 dark:border-white/[.08] dark:bg-white/[.04]">
+    <div className="flex flex-none flex-col gap-2.5 rounded-lg border border-black/10 bg-white p-3 dark:border-white/[.08] dark:bg-white/[.04]">
       <div className="flex flex-col gap-[3px]">
         <span className="text-[13px] font-medium leading-tight text-paper-text dark:text-ink-text">{title}</span>
         {hint && <span className="text-[11.5px] leading-snug text-paper-dim dark:text-ink-text/55">{hint}</span>}
