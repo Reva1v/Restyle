@@ -3,8 +3,8 @@ import { commands, type Settings, type Style, type StyleKind } from "../../lib/i
 import type { T } from "../../lib/i18n";
 import { comboLabel } from "../../lib/hotkey";
 import HotkeyField from "../HotkeyField";
-import { Button, Caption, DraftField, MoreMenu, Select, Toggle } from "../../ui/kit";
-import { LANGS } from "../../lib/langs";
+import { Button, Caption, DraftField, MoreMenu, Segmented, Select, Toggle } from "../../ui/kit";
+import { LANGS, langLabel } from "../../lib/langs";
 
 
 /**
@@ -128,57 +128,91 @@ export default function Styles({
   const builtin = rows.filter((r) => r.s.builtin);
   const custom = rows.filter((r) => !r.s.builtin);
 
-  const row = ({ s, i }: { s: Style; i: number }) => (
-    <div
-      key={`${s.id}-${i}`}
-      draggable
-      onDragStart={(e) => {
-        setDrag(i);
-        // Chromium не начнёт перетаскивание без данных в dataTransfer.
-        e.dataTransfer.setData("text/plain", String(i));
-        e.dataTransfer.effectAllowed = "move";
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        if (over !== i) setOver(i);
-      }}
-      onDragLeave={() => setOver((o) => (o === i ? null : o))}
-      onDrop={(e) => {
-        e.preventDefault();
-        const from = drag ?? Number(e.dataTransfer.getData("text/plain"));
-        if (!Number.isNaN(from)) move(from, i);
-        setDrag(null);
-        setOver(null);
-      }}
-      onDragEnd={() => {
-        setDrag(null);
-        setOver(null);
-      }}
-      onClick={() => setSelected(i)}
-      className={`group flex select-none items-center gap-2.5 rounded-[7px] px-2.5 py-2.5 text-left transition-colors ${
-        drag === null ? "cursor-pointer" : "cursor-grabbing"
-      } ${
-        i === selected
-          ? "border border-amber-deep bg-white shadow-card dark:border-amber dark:bg-white/[.07]"
-          : "border border-transparent hover:bg-black/[.04] dark:hover:bg-white/[.05]"
-      } ${drag === i ? "opacity-40" : ""} ${dropLine(i)}`}
-    >
-      <span className="font-mono text-[11px] text-paper-soft dark:text-ink-text/45">{i + 1}</span>
-      <span className="flex-1 truncate text-[12.5px] text-[#33363c] dark:text-ink-text/90">{s.name}</span>
-      {s.kind === "translate" && (
-        <span className="font-mono text-[9.5px] text-paper-dim dark:text-ink-text/45">{s.targetLang}</span>
-      )}
-      {s.hotkey && (
-        <span className="font-mono text-[10px] text-paper-dim dark:text-ink-text/45">{comboLabel(s.hotkey)}</span>
-      )}
-      {/* Стрелки — на случай, когда таскать мышью неудобно */}
-      <span className="flex flex-none gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
-        <Arrow label={t("styles.up")} onClick={() => move(i, i - 1)} glyph="▲" />
-        <Arrow label={t("styles.down")} onClick={() => move(i, i + 1)} glyph="▼" />
-      </span>
-    </div>
-  );
+  /** Подстрочник строки: язык перевода и/или хоткей. */
+  const subline = (s: Style) =>
+    [s.kind === "translate" ? `${t("styles.kindTranslate")} → ${langLabel(s.targetLang)}` : "", s.hotkey ? comboLabel(s.hotkey) : ""]
+      .filter(Boolean)
+      .join(" · ");
+
+  const row = ({ s, i }: { s: Style; i: number }) => {
+    const active = i === selected;
+    return (
+      <div
+        key={`${s.id}-${i}`}
+        draggable
+        onDragStart={(e) => {
+          setDrag(i);
+          // Chromium не начнёт перетаскивание без данных в dataTransfer.
+          e.dataTransfer.setData("text/plain", String(i));
+          e.dataTransfer.effectAllowed = "move";
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (over !== i) setOver(i);
+        }}
+        onDragLeave={() => setOver((o) => (o === i ? null : o))}
+        onDrop={(e) => {
+          e.preventDefault();
+          const from = drag ?? Number(e.dataTransfer.getData("text/plain"));
+          if (!Number.isNaN(from)) move(from, i);
+          setDrag(null);
+          setOver(null);
+        }}
+        onDragEnd={() => {
+          setDrag(null);
+          setOver(null);
+        }}
+        onClick={() => setSelected(i)}
+        className={`group relative flex select-none items-center gap-2.5 rounded-[8px] py-[8px] pl-3 pr-2 text-left transition-colors ${
+          drag === null ? "cursor-pointer" : "cursor-grabbing"
+        } ${
+          active ? "bg-amber-deep/[.10] dark:bg-amber/[.12]" : "hover:bg-black/[.04] dark:hover:bg-white/[.05]"
+        } ${drag === i ? "opacity-40" : ""} ${dropLine(i)}`}
+      >
+        {/* Выбранная строка — акцентная полоска слева вместо рамки: спокойнее и читается в обеих темах. */}
+        {active && <span className="absolute bottom-[7px] left-0 top-[7px] w-[3px] rounded-full bg-amber-deep dark:bg-amber" />}
+        <span
+          className={`flex h-[20px] w-[20px] flex-none items-center justify-center rounded-[5px] font-mono text-[10.5px] ${
+            active
+              ? "bg-amber-deep/[.16] text-amber-ink dark:bg-amber/[.18] dark:text-amber"
+              : "bg-black/[.05] text-paper-dim dark:bg-white/[.06] dark:text-ink-text/50"
+          }`}
+          title={i < 9 ? t("styles.chips") : undefined}
+        >
+          {i < 9 ? i + 1 : "·"}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+          <span
+            className={`truncate text-[12.5px] leading-tight ${
+              active ? "font-medium text-paper-text dark:text-ink-text" : "text-[#33363c] dark:text-ink-text/90"
+            }`}
+          >
+            {s.name}
+          </span>
+          {subline(s) && (
+            <span className="truncate font-mono text-[10px] leading-tight text-paper-dim dark:text-ink-text/45">{subline(s)}</span>
+          )}
+        </span>
+        {/* Стрелки — на случай, когда таскать мышью неудобно */}
+        <span className="flex flex-none gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <Arrow label={t("styles.up")} onClick={() => move(i, i - 1)} glyph="▲" />
+          <Arrow label={t("styles.down")} onClick={() => move(i, i + 1)} glyph="▼" />
+        </span>
+      </div>
+    );
+  };
+
+  const resetToDefault = () =>
+    def &&
+    patch({
+      name: def.name,
+      instruction: def.instruction,
+      screenshot: def.screenshot,
+      kind: def.kind,
+      targetLang: def.targetLang,
+      postStyle: def.postStyle,
+    });
 
   return (
     <div className="flex h-full min-h-0">
@@ -232,16 +266,17 @@ export default function Styles({
       </div>
 
       {style && (
-        <div className="flex min-w-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
-          <div className="flex flex-wrap gap-3.5">
-            <label className="flex min-w-[140px] flex-1 basis-[140px] flex-col gap-1.5">
-              <Caption>{t("styles.name")}</Caption>
-              <DraftField className="h-[34px] py-0" value={style.name} onCommit={(v) => patch({ name: v })} />
-            </label>
-            <label className="flex w-[150px] flex-none flex-col gap-1.5">
-              <Caption>{t("styles.kind")}</Caption>
-              <Select<StyleKind>
-                className="h-[34px]"
+        <div className="flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto p-5">
+          {/* Имя — на всю ширину, тип — строкой под ним: панель узкая, в одну
+              строку имя вроде «Translate to Ukrainian» не помещалось. */}
+          <label className="flex min-w-0 flex-col gap-1.5">
+            <Caption>{t("styles.name")}</Caption>
+            <DraftField className="h-[36px] py-0 text-[14px] font-medium" value={style.name} onCommit={(v) => patch({ name: v })} />
+          </label>
+          <div className="flex items-center gap-3">
+            <Caption>{t("styles.kind")}</Caption>
+            <div className="flex h-[32px] items-center rounded-lg border border-black/10 bg-black/[.03] px-[3px] dark:border-white/[.08] dark:bg-white/[.04]">
+              <Segmented<StyleKind>
                 value={style.kind}
                 onChange={(v) =>
                   patch({ kind: v, targetLang: v === "translate" && !style.targetLang ? "EN-US" : style.targetLang })
@@ -251,13 +286,13 @@ export default function Styles({
                   { value: "translate", label: t("styles.kindTranslate") },
                 ]}
               />
-            </label>
+            </div>
           </div>
 
-          {style.kind === "translate" ? (
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap gap-3.5">
-                <label className="flex min-w-[140px] flex-1 basis-[180px] flex-col gap-1.5">
+          {style.kind === "translate" && (
+            <Section title={t("styles.sectionTranslate")} hint={t("styles.postHint")}>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex min-w-0 flex-col gap-1.5">
                   <Caption>{t("styles.lang")}</Caption>
                   <Select
                     className="h-[34px]"
@@ -266,7 +301,7 @@ export default function Styles({
                     options={LANGS}
                   />
                 </label>
-                <label className="flex min-w-[150px] flex-1 basis-[180px] flex-col gap-1.5">
+                <label className="flex min-w-0 flex-col gap-1.5">
                   <Caption>{t("styles.post")}</Caption>
                   <Select
                     className="h-[34px]"
@@ -281,78 +316,55 @@ export default function Styles({
                   />
                 </label>
               </div>
-              <span className="text-[11.5px] leading-snug text-paper-dim dark:text-ink-text/55">
-                {t("styles.postHint")}
-              </span>
-              <label className="flex min-h-[120px] flex-1 flex-col gap-1.5">
-                <Caption>{t("styles.instruction")}</Caption>
-                <DraftField
-                  multiline
-                  className="min-h-0 flex-1 resize-none leading-relaxed"
-                  placeholder={t("styles.placeholder")}
-                  value={style.instruction}
-                  onCommit={(v) => patch({ instruction: v })}
-                />
-              </label>
-            </div>
-          ) : (
-            <label className="flex min-h-[120px] flex-1 flex-col gap-1.5">
-              <Caption>{t("styles.instruction")}</Caption>
-              <DraftField
-                multiline
-                className="min-h-0 flex-1 resize-none leading-relaxed"
-                placeholder={t("styles.placeholder")}
-                value={style.instruction}
-                onCommit={(v) => patch({ instruction: v })}
-              />
-            </label>
+            </Section>
           )}
 
-          <div className="flex flex-wrap gap-3.5">
-            <div className="flex min-w-[140px] flex-1 basis-[180px] flex-col gap-1.5">
-              <Caption>{t("styles.hotkey")}</Caption>
+          <Section
+            title={t("styles.instructionTitle")}
+            hint={style.kind === "translate" ? t("styles.instructionTranslateHint") : t("styles.instructionHint")}
+          >
+            <DraftField
+              multiline
+              className={`max-h-[300px] resize-y leading-relaxed ${style.kind === "translate" ? "min-h-[80px]" : "min-h-[104px]"}`}
+              placeholder={t("styles.placeholder")}
+              value={style.instruction}
+              onCommit={(v) => patch({ instruction: v })}
+            />
+          </Section>
+
+          {/* Поведение: хоткей строкой на всю ширину (подпись + поле), ниже —
+              тумблер скриншота. Одна карточка, чтобы не плодить рамки. */}
+          <div className="flex flex-col divide-y divide-black/[.08] rounded-lg border border-black/10 bg-white dark:divide-white/[.07] dark:border-white/[.08] dark:bg-white/[.04]">
+            <div className="flex flex-col gap-2 p-3">
+              <div className="flex flex-col gap-[3px]">
+                <span className="text-[13px] font-medium leading-tight text-paper-text dark:text-ink-text">{t("styles.hotkeyTitle")}</span>
+                <span className="text-[11.5px] leading-snug text-paper-dim dark:text-ink-text/55">{t("styles.hotkeyHint")}</span>
+              </div>
               <HotkeyField fill lang={lang} value={style.hotkey} allowEmpty onChange={(c) => patch({ hotkey: c })} />
             </div>
-            <div className="flex min-w-[124px] flex-1 basis-[140px] flex-col gap-1.5">
-              <Caption>{t("styles.screenshot")}</Caption>
-              <button
-                type="button"
-                onClick={() => patch({ screenshot: !style.screenshot })}
-                className="flex h-[34px] items-center gap-2 rounded-md border border-black/[.13] bg-white px-3 text-left dark:border-white/10 dark:bg-white/[.05]"
-              >
-                <Toggle checked={style.screenshot} onChange={(v) => patch({ screenshot: v })} size="sm" />
-                <span className="text-xs text-[#33363c] dark:text-ink-text/80">
-                  {style.screenshot ? t("common.on") : t("common.off")}
-                </span>
-              </button>
-            </div>
+            <label className="flex cursor-pointer items-center gap-3.5 p-3">
+              <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                <span className="text-[13px] font-medium leading-tight text-paper-text dark:text-ink-text">{t("styles.screenshotTitle")}</span>
+                <span className="text-[11.5px] leading-snug text-paper-dim dark:text-ink-text/55">{t("styles.screenshotHint")}</span>
+              </span>
+              <Toggle checked={style.screenshot} onChange={(v) => patch({ screenshot: v })} />
+            </label>
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-2">
-            <span className="font-mono text-[11px] text-paper-soft dark:text-ink-text/40">
+          <div className="mt-auto flex items-center gap-3 border-t border-black/[.08] pt-3 dark:border-white/[.07]">
+            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-paper-soft dark:text-ink-text/40">
               id: {style.id || "…"}
-              {style.builtin ? ` · ${t("styles.builtin")}` : ""}
             </span>
-            <span className="ml-auto flex items-center gap-2">
-              {style.builtin && (
-                <Button
-                  disabled={!changed}
-                  onClick={() =>
-                    def &&
-                    patch({
-                      name: def.name,
-                      instruction: def.instruction,
-                      screenshot: def.screenshot,
-                      kind: def.kind,
-                      targetLang: def.targetLang,
-                      postStyle: def.postStyle,
-                    })
-                  }
-                >
-                  {t("common.reset")}
-                </Button>
-              )}
-              {/* Удалять можно и встроенные: вернуть их можно ссылкой над списком. */}
+            <span className="flex flex-none items-center gap-2.5">
+              {style.builtin &&
+                (changed ? (
+                  <Button onClick={resetToDefault} title={t("styles.resetHint")}>
+                    {t("styles.resetToDefault")}
+                  </Button>
+                ) : (
+                  <span className="text-[11px] text-paper-dim dark:text-ink-text/45">{t("styles.isDefault")}</span>
+                ))}
+              {/* Удалять можно и встроенные: вернуть их можно из меню «···». */}
               <Button kind="danger" onClick={remove}>
                 {t("styles.delete")}
               </Button>
@@ -360,6 +372,19 @@ export default function Styles({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Карточка редактора: заголовок, подсказка и содержимое. */
+function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-2.5 rounded-lg border border-black/10 bg-white p-3 dark:border-white/[.08] dark:bg-white/[.04]">
+      <div className="flex flex-col gap-[3px]">
+        <span className="text-[13px] font-medium leading-tight text-paper-text dark:text-ink-text">{title}</span>
+        {hint && <span className="text-[11.5px] leading-snug text-paper-dim dark:text-ink-text/55">{hint}</span>}
+      </div>
+      {children}
     </div>
   );
 }
