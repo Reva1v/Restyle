@@ -339,6 +339,75 @@ export function Select<V extends string>({
   );
 }
 
+/**
+ * Кнопка «···» с выпадающим списком действий (шапка списка стилей). Список —
+ * под кнопкой, прижат к правому краю; клик мимо и Esc закрывают. Пункты с
+ * `hidden` не рисуются, чтобы «Вернуть удалённые» не висел, когда возвращать нечего.
+ */
+export function MoreMenu({
+  title,
+  items,
+}: {
+  title: string;
+  items: { label: string; onClick: () => void; hidden?: boolean; danger?: boolean }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [open]);
+  const visible = items.filter((i) => !i.hidden);
+  return (
+    <span ref={rootRef} className="relative inline-flex">
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-md text-[15px] leading-none tracking-[.05em] transition-colors ${
+          open
+            ? "bg-black/[.07] text-paper-text dark:bg-white/[.1] dark:text-ink-text"
+            : "text-paper-dim hover:bg-black/[.05] hover:text-paper-text dark:text-ink-text/55 dark:hover:bg-white/[.07] dark:hover:text-ink-text"
+        }`}
+      >
+        ···
+      </button>
+      {open && (
+        <div className="absolute right-0 top-[26px] z-[1000] min-w-[160px] whitespace-nowrap rounded-lg border border-black/[.12] bg-white p-1 shadow-hudLight dark:border-white/10 dark:bg-[#1f2126] dark:shadow-hud">
+          {visible.map((it) => (
+            <button
+              key={it.label}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                it.onClick();
+              }}
+              className={`flex w-full cursor-pointer items-center rounded-md px-2.5 py-[7px] text-left text-[12.5px] hover:bg-black/[.05] dark:hover:bg-white/[.07] ${
+                it.danger ? "text-danger-ink dark:text-danger" : "text-paper-text dark:text-ink-text/90"
+              }`}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
 /** Модалка поверх окна: затемнение + карточка. Esc и клик по фону закрывают. */
 export function Modal({
   title,

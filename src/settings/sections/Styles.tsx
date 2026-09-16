@@ -3,11 +3,8 @@ import { commands, type Settings, type Style, type StyleKind } from "../../lib/i
 import type { T } from "../../lib/i18n";
 import { comboLabel } from "../../lib/hotkey";
 import HotkeyField from "../HotkeyField";
-import { Button, Caption, DraftField, Select, Toggle } from "../../ui/kit";
+import { Button, Caption, DraftField, MoreMenu, Select, Toggle } from "../../ui/kit";
 import { LANGS } from "../../lib/langs";
-
-/** Ссылка-кнопка в шапке списка (как «Добавить»). */
-const LINK = "text-[11.5px] font-medium text-amber-ink hover:underline dark:text-amber";
 
 
 /**
@@ -186,9 +183,14 @@ export default function Styles({
   return (
     <div className="flex h-full min-h-0">
       <div className="flex w-[268px] flex-none flex-col border-r border-black/[.08] dark:border-white/[.07]">
-        <div className="flex items-baseline gap-2 px-4 pb-1 pt-4">
+        {/* Шапка в одну строку: название и счётчик, справа «Добавить» и «···»
+            с импортом/экспортом/возвратом. Подсказка про цифры 1–9 — в title
+            счётчика: цифры и так стоят у каждого стиля. */}
+        <div className="flex items-center gap-2 px-4 pb-2.5 pt-4">
           <span className="text-[13px] font-semibold text-paper-text dark:text-ink-text">{t("styles.title")}</span>
-          <span className="font-mono text-[11px] text-paper-dim dark:text-ink-text/50">{settings.styles.length}</span>
+          <span title={t("styles.chips")} className="font-mono text-[11px] text-paper-dim dark:text-ink-text/50">
+            {settings.styles.length}
+          </span>
           <button
             type="button"
             onClick={add}
@@ -196,36 +198,28 @@ export default function Styles({
           >
             {t("common.add")}
           </button>
-        </div>
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4">
-          <button type="button" onClick={() => void importStyles()} className={LINK}>
-            {t("styles.import")}
-          </button>
-          <button type="button" onClick={() => void exportStyles()} className={LINK}>
-            {t("styles.export")}
-          </button>
-          {defaults.some((d) => !settings.styles.some((s) => s.id === d.id)) && (
-            <button
-              type="button"
-              onClick={restoreBuiltin}
-              className="text-[11.5px] font-medium text-amber-ink hover:underline dark:text-amber"
-            >
-              {t("styles.restoreBuiltin")}
-            </button>
-          )}
+          <MoreMenu
+            title={t("styles.more")}
+            items={[
+              { label: t("styles.import"), onClick: () => void importStyles() },
+              { label: t("styles.export"), onClick: () => void exportStyles() },
+              {
+                label: t("styles.restoreBuiltin"),
+                onClick: restoreBuiltin,
+                hidden: !defaults.some((d) => !settings.styles.some((s) => s.id === d.id)),
+              },
+            ]}
+          />
         </div>
         {ioNote && (
           <span
-            className={`px-4 pb-1 text-[10.5px] leading-snug ${
+            className={`px-4 pb-2 text-[10.5px] leading-snug ${
               ioNote.error ? "text-danger-ink dark:text-danger" : "text-paper-dim dark:text-ink-text/60"
             }`}
           >
             {ioNote.text}
           </span>
         )}
-        <span className="px-4 pb-2 text-[10.5px] leading-snug text-paper-dim dark:text-ink-text/45">
-          {t("styles.chips")}
-        </span>
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
           <GroupLabel>{t("styles.groupBuiltin")}</GroupLabel>
           {builtin.map(row)}

@@ -64,6 +64,7 @@ const RU = {
   // --- стили ---
   "styles.groupBuiltin": "Встроенные",
   "styles.restoreBuiltin": "Вернуть удалённые встроенные",
+  "styles.more": "Ещё",
   "styles.import": "Импорт",
   "styles.export": "Экспорт",
   "styles.imported": "Добавлено: {n}",
@@ -334,6 +335,7 @@ const UK: Record<Key, string> = {
 
   "styles.groupBuiltin": "Вбудовані",
   "styles.restoreBuiltin": "Повернути видалені вбудовані",
+  "styles.more": "Ще",
   "styles.import": "Імпорт",
   "styles.export": "Експорт",
   "styles.imported": "Додано: {n}",
@@ -590,6 +592,7 @@ const EN: Record<Key, string> = {
 
   "styles.groupBuiltin": "Built-in",
   "styles.restoreBuiltin": "Restore deleted built-ins",
+  "styles.more": "More",
   "styles.import": "Import",
   "styles.export": "Export",
   "styles.imported": "Added: {n}",
