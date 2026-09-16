@@ -16,6 +16,7 @@ mod settings;
 mod textfx;
 mod translate;
 mod tray;
+mod update;
 mod window;
 
 use tauri::{Emitter, Manager, State};
@@ -165,6 +166,19 @@ struct Diagnostics {
 #[tauri::command]
 fn diagnostics() -> Diagnostics {
     Diagnostics { hook_installed: hotkey::is_installed() }
+}
+
+/// Версия из Cargo — футер окна настроек (раньше была зашита в TSX и отставала).
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").into()
+}
+
+/// Найденное обновление, если проверка уже прошла (меню трея и окно настроек
+/// спрашивают при открытии; дальше слушают `update:available`).
+#[tauri::command]
+fn update_status(state: State<update::UpdateState>) -> Option<update::UpdateInfo> {
+    state.0.lock().unwrap().clone()
 }
 
 /// Проверка ключа тестовым запросом (мастер первого запуска). Ключ приходит
@@ -562,6 +576,7 @@ fn main() {
             hotkey::spawn(tx.clone(), settings.combos());
             control::spawn(rx, tx.clone(), app.handle().clone(), hwnd, menu_hwnd, capture);
             app.manage(CtrlTx(tx.clone()));
+            app.manage(update::UpdateState::default());
 
             // Демо-режим для проверки без клавиатуры:
             // RESTYLE_DEMO=<мс>[:<style_id>] — через задержку сработать, как будто
@@ -641,6 +656,9 @@ fn main() {
             // --- трей ---
             tray::build(app)?;
 
+            // --- обновления: раз в сутки, если не выключено в «Приватности» ---
+            update::spawn(app.handle().clone());
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -665,6 +683,8 @@ fn main() {
             win_minimize,
             win_close,
             diagnostics,
+            app_version,
+            update_status,
             test_api_key,
             finish_onboarding,
             get_settings,

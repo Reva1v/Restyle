@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { commands, events, type Settings } from "../lib/ipc";
+import { commands, events, type Settings, type UpdateInfo } from "../lib/ipc";
 import { useAppShell } from "../lib/theme";
 import type { Key, T } from "../lib/i18n";
 import { TitleBar } from "../ui/kit";
@@ -33,6 +33,14 @@ const TABS: { id: Tab; label: Key }[] = [
 export default function SettingsApp() {
   const { t, lang } = useAppShell();
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [version, setVersion] = useState("");
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  useEffect(() => {
+    void commands.appVersion().then(setVersion);
+    void commands.updateStatus().then(setUpdate);
+    const un = events.onUpdateAvailable(setUpdate);
+    return () => void un.then((f) => f());
+  }, []);
   const [tab, setTab] = useState<Tab>("model");
   const [conflicts, setConflicts] = useState<[string, string][]>([]);
   const [hookOk, setHookOk] = useState(true);
@@ -95,7 +103,7 @@ export default function SettingsApp() {
           ))}
           <div className="mt-auto flex flex-col gap-1 rounded-[7px] bg-black/[.04] p-2.5 dark:bg-white/[.05]">
             <span className="flex items-center gap-2">
-              <span className="text-[11px] font-medium text-[#33363c] dark:text-ink-text/85">Restyle 0.1.0</span>
+              <span className="whitespace-nowrap text-[11px] font-medium text-[#33363c] dark:text-ink-text/85">Restyle {version}</span>
               <button
                 type="button"
                 onClick={() => void commands.openUrl(REPO_URL)}
@@ -108,6 +116,16 @@ export default function SettingsApp() {
                 GitHub
               </button>
             </span>
+            {update && (
+              <button
+                type="button"
+                onClick={() => void commands.openUrl(update.url)}
+                title={update.url}
+                className="cursor-pointer text-left text-[11px] font-medium text-amber-ink hover:underline dark:text-amber"
+              >
+                ↑ {t("menu.update", { v: update.version })}
+              </button>
+            )}
             <span
               className={`font-mono text-[10.5px] leading-snug ${
                 hookOk ? "text-paper-soft dark:text-ink-text/50" : "text-danger-ink dark:text-danger"

@@ -114,6 +114,13 @@ export default function Privacy({ t, settings, apply }: { t: T; settings: Settin
           }}
         />
       )}
+
+      <ToggleRow
+        title={t("privacy.updates")}
+        hint={t("privacy.updatesHint")}
+        checked={settings.checkUpdates}
+        onChange={(v) => apply({ ...settings, checkUpdates: v })}
+      />
     </div>
   );
 }

@@ -352,6 +352,8 @@ pub struct Settings {
     pub restore_clipboard: bool,
     /// Мастер первого запуска пройден (или пропущен).
     pub onboarded: bool,
+    /// Раз в сутки спрашивать GitHub Releases о новой версии (см. `update.rs`).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -398,6 +400,7 @@ impl Default for Settings {
             translator: "deepl".into(),
             restore_clipboard: true,
             onboarded: false,
+            check_updates: true,
         }
     }
 }

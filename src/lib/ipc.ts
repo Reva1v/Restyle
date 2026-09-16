@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { UpdateInfo as UpdateInfoT } from "../bindings/UpdateInfo";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { ShowPayload } from "../bindings/ShowPayload";
 import type { Settings } from "../bindings/Settings";
@@ -59,10 +60,15 @@ export const events = {
   onMenuShow: (cb: (scale: number) => void): Promise<UnlistenFn> =>
     listen<number>("menu:show", (e) => cb(e.payload)),
   onMenuHide: (cb: () => void): Promise<UnlistenFn> => listen("menu:hide", () => cb()),
+  /** фоновая проверка нашла новую версию */
+  onUpdateAvailable: (cb: (u: UpdateInfoT) => void): Promise<UnlistenFn> =>
+    listen<UpdateInfoT>("update:available", (e) => cb(e.payload)),
   /** окно меню показывает список регистров (кнопка «Регистр» в панели) */
   onMenuFormat: (cb: (p: { scale: number; current: string }) => void): Promise<UnlistenFn> =>
     listen<{ scale: number; current: string }>("menu:format", (e) => cb(e.payload)),
 };
+
+export type { UpdateInfo } from "../bindings/UpdateInfo";
 
 export const commands = {
   /** ack для замера задержки показа: вызывается после первого кадра */
@@ -108,6 +114,10 @@ export const commands = {
   resizeOverlay: (height: number) => invoke("resize_overlay", { height }),
   resizeToast: (width: number, height: number) => invoke("resize_toast", { width, height }),
   openUrl: (url: string) => invoke("open_url", { url }),
+  /** версия из Cargo (футер окна настроек) */
+  appVersion: (): Promise<string> => invoke("app_version"),
+  /** найденное обновление, если суточная проверка уже прошла */
+  updateStatus: (): Promise<UpdateInfoT | null> => invoke("update_status"),
   /** вернуть текст конкретной записи истории (окно истории) */
   undoEntry: (index: number) => invoke("undo_entry", { index }),
   openSettingsWindow: () => invoke("open_settings_window"),

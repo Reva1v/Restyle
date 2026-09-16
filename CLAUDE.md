@@ -181,6 +181,19 @@ Git-коммиты — всегда на английском (глобальн�
    в `open_settings`; переходы `set_suspended` пишутся в лог (залипший `true`
    иначе никак не увидеть: хоткеи просто перестают работать).
 
+11. **Проверка обновлений** (`update.rs`) — через 20 с после старта и дальше
+   раз в сутки (тик раз в час: настройку `checkUpdates` могли включить между
+   проверками) `GET api.github.com/repos/Reva1v/Restyle/releases/latest` с одним
+   лишь `User-Agent: Restyle/<версия>`; сравнение числовое (`parse_version`/`newer`,
+   `v0.1.10` > `0.1.2`). Найденное — в `UpdateState` (команда `update_status`
+   для окон, открытых позже) и событие `update:available {version, url}`: пункт
+   «Доступна версия X» в меню трея и «↑ X» в футере настроек открывают страницу
+   релиза через `open_url` (github.com в белом списке; чужой `html_url` заменяется
+   на страницу releases/latest). Автоскачивания нет. Тумблер — в «Приватности»,
+   по умолчанию включён. Debug: `RESTYLE_FAKE_VERSION=0.0.1` подменяет текущую
+   версию, чтобы увидеть путь «обновление найдено». Футер настроек берёт версию
+   из `app_version` (Cargo), а не из TSX.
+
 Иконка — тёмная плашка `#181a1e` с янтарной `R` (`scripts/make_icons.py`,
 IBM Plex Sans 700 из `node_modules`): на тёмной панели задач плашка сливается с
 фоном и видна чистая янтарная буква, на светлой — тёмный значок. Каждый размер
@@ -246,7 +259,8 @@ op или id стиля перевода: фронт не трогает под�
 в окне меню), `open_url(url)` (ShellExecute, белый список github.com / www.deepl.com /
 aistudio.google.com),
 `open_settings_window`, `open_history_window`, `win_minimize`, `win_close`
-(своя шапка окна), `diagnostics` (стоит ли хук), `test_api_key(key)` (проверка
+(своя шапка окна), `diagnostics` (стоит ли хук), `app_version`,
+`update_status` (найденное обновление или null), `test_api_key(key)` (проверка
 живым запросом, в keyring не пишет), `finish_onboarding`,
 `set_api_key(key)`, `has_api_key`, `clear_api_key`.
 Демо без клавиатуры: `RESTYLE_DEMO=<мс>[:<style_id>]`, `RESTYLE_DEMO_HIDE=<мс>`,
@@ -263,7 +277,8 @@ Windows шлёт `Click{button_state: Down}` и `Up` и для левой, и д
 `Settings { mainHotkey, undoHotkey, layoutHotkey, styles[], model, autostart, theme, accent, autoPaste,
 screenshotEnabled, screenshotMode, screenshotExcludedProcesses[],
 selectOnlyProcesses[], historyToDisk, historyLimit, language, restoreClipboard,
-onboarded, quickStyle, longPress, longPressRingMs, longPressOpenMs, translator }`;
+onboarded, quickStyle, longPress, longPressRingMs, longPressOpenMs, translator,
+checkUpdates }`;
 у стиля — `screenshot` (быстрый стиль без кадра не тратит 20–60 мс),
 `kind` (`prompt` | `translate`), `targetLang`, `postStyle`.
 Долгое нажатие: короткое нажатие основной комбинации применяет `quickStyle`,
@@ -331,7 +346,7 @@ CSS-переменные «R G B», новый хардкод цвета акц�
 `textfx.rs` (регистр, раскладка EN↔RU/UK, вклейка выделения), `hotkey/combo.rs`
 (двойное нажатие модификатора), `hotkey/mod.rs` (watchdog с 32-битным переносом
 `dwTime`, `modifiers_held`), `settings.rs` (`refine_style`, `merge_imported`,
-`StylesFile`). Всего 86 тестов.
+`StylesFile`), `update.rs` (разбор тегов, сравнение версий). Всего 89 тестов.
 Замеры на релизе — `scripts/perf_release.ps1`: считает CPU и память по всему
 дереву процессов (вебвью живут в отдельных `msedgewebview2.exe`) и КЛИКАЕТ в
 поле перед демо-хоткеем: `SendKeys('%')` для разблокировки `SetForegroundWindow`

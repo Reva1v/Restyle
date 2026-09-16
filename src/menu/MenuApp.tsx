@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { commands, events, type HistoryItem, type Settings } from "../lib/ipc";
+import { commands, events, type HistoryItem, type Settings, type UpdateInfo } from "../lib/ipc";
 import { useAppShell } from "../lib/theme";
 import { comboLabel } from "../lib/hotkey";
 import { KeyCap, Toggle } from "../ui/kit";
@@ -26,6 +26,8 @@ export default function MenuApp() {
   /** Окно меню служит и списком регистров для панели оверлея. */
   const [mode, setMode] = useState<"tray" | "format">("tray");
   const [fmtCurrent, setFmtCurrent] = useState("");
+  /** Новая версия на GitHub (суточная проверка); null — нет или выключено. */
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(() => {
@@ -34,8 +36,10 @@ export default function MenuApp() {
 
   useEffect(() => {
     reload();
+    void commands.updateStatus().then(setUpdate);
     const subs = [
       events.onHistoryChanged(reload),
+      events.onUpdateAvailable(setUpdate),
       // Каждое открытие начинается с корня: меню — не окно, состояние копить незачем.
       events.onMenuFormat((p) => {
         setMode("format");
@@ -128,6 +132,16 @@ export default function MenuApp() {
             <Divider />
             <AutostartItem t={t} settings={settings} />
             <Divider />
+            {update && (
+              <>
+                <Item
+                  label={t("menu.update", { v: update.version })}
+                  accent
+                  onClick={() => void commands.openUrl(update.url).then(close)}
+                />
+                <Divider />
+              </>
+            )}
             <Item label={t("menu.quit")} onClick={() => void commands.exitApp()} />
           </motion.div>
         ) : (
@@ -194,6 +208,7 @@ function Item({
   badge,
   chevron = false,
   disabled = false,
+  accent = false,
   onClick,
 }: {
   label: string;
@@ -201,6 +216,8 @@ function Item({
   badge?: string;
   chevron?: boolean;
   disabled?: boolean;
+  /** Акцентный цвет текста: пункт «Доступна версия…». */
+  accent?: boolean;
   onClick: () => void;
 }) {
   return (
@@ -208,7 +225,9 @@ function Item({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      className="flex items-center gap-2 rounded-lg px-2.5 py-[7px] text-left text-[12.5px] text-paper-text transition-colors hover:bg-black/[.06] disabled:opacity-40 disabled:hover:bg-transparent dark:text-ink-text dark:hover:bg-white/[.07]"
+      className={`flex items-center gap-2 rounded-lg px-2.5 py-[7px] text-left text-[12.5px] transition-colors hover:bg-black/[.06] disabled:opacity-40 disabled:hover:bg-transparent dark:hover:bg-white/[.07] ${
+        accent ? "font-medium text-amber-ink dark:text-amber" : "text-paper-text dark:text-ink-text"
+      }`}
     >
       <span className="min-w-0 flex-1 leading-snug">{label}</span>
       {badge && (

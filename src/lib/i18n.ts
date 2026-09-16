@@ -21,6 +21,7 @@ const RU = {
   "menu.undo": "Вернуть предыдущий текст",
   "menu.autostart": "Автозапуск",
   "menu.quit": "Выход",
+  "menu.update": "Доступна версия {v}",
   "menu.empty": "Пока пусто",
   "menu.copied": "Скопировано",
   "menu.allHistory": "Все записи",
@@ -212,6 +213,8 @@ const RU = {
 
   // приватность
   "privacy.shot": "Прикладывать скриншот",
+  "privacy.updates": "Проверять обновления",
+  "privacy.updatesHint": "Раз в сутки один запрос к GitHub Releases за номером последней версии. Ничего не скачивается и не отправляется.",
   "privacy.shotHint": "Выключи, и в API уйдёт только текст. Метка в оверлее сменится на «без скриншота».",
   "privacy.what": "ЧТО СНИМАЕМ",
   "privacy.window": "Окно с фокусом",
@@ -291,6 +294,7 @@ const UK: Record<Key, string> = {
   "menu.undo": "Повернути попередній текст",
   "menu.autostart": "Автозапуск",
   "menu.quit": "Вихід",
+  "menu.update": "Доступна версія {v}",
   "menu.empty": "Поки порожньо",
   "menu.copied": "Скопійовано",
   "menu.allHistory": "Усі записи",
@@ -470,6 +474,8 @@ const UK: Record<Key, string> = {
   "styles.builtin": "вбудований",
 
   "privacy.shot": "Додавати скриншот",
+  "privacy.updates": "Перевіряти оновлення",
+  "privacy.updatesHint": "Раз на добу один запит до GitHub Releases за номером останньої версії. Нічого не завантажується й не надсилається.",
   "privacy.shotHint": "Вимкни — і в API піде лише текст. Мітка в оверлеї зміниться на «без скриншота».",
   "privacy.what": "ЩО ЗНІМАЄМО",
   "privacy.window": "Вікно у фокусі",
@@ -544,6 +550,7 @@ const EN: Record<Key, string> = {
   "menu.undo": "Restore previous text",
   "menu.autostart": "Start with Windows",
   "menu.quit": "Quit",
+  "menu.update": "Version {v} available",
   "menu.empty": "Nothing yet",
   "menu.copied": "Copied",
   "menu.allHistory": "All entries",
@@ -723,6 +730,8 @@ const EN: Record<Key, string> = {
   "styles.builtin": "built-in",
 
   "privacy.shot": "Attach a screenshot",
+  "privacy.updates": "Check for updates",
+  "privacy.updatesHint": "One request a day to GitHub Releases for the latest version number. Nothing is downloaded or sent.",
   "privacy.shotHint": "Turn it off and only text goes to the API. The overlay badge switches to “no screenshot”.",
   "privacy.what": "WHAT WE CAPTURE",
   "privacy.window": "Focused window",
