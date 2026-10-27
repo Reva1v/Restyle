@@ -43,7 +43,7 @@ pub struct HistoryEntry {
 /// То же для фронтенда и трея: без HWND и переводов строк, новые — первыми.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct HistoryItem {
     #[ts(type = "number")]
     pub at: u64,
@@ -168,9 +168,12 @@ impl History {
         self.entries.back_mut()
     }
 
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     /// Записи для трея и окна настроек: новые первыми.

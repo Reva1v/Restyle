@@ -13,7 +13,7 @@
 //! - при видимом оверлее глотаются и его клавиши: Enter/Esc/Tab/R/стрелки/цифры;
 //! - `SUSPENDED` — пауза распознавания на время захвата нового хоткея в настройках.
 
-pub mod combo;
+pub use restyle_core::hotkey::combo;
 
 use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -35,12 +35,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::control::ControlMsg;
 use combo::ComboSet;
 
-/// Идентификаторы комбинаций в `ComboSet`. Стили — `style:<id>`.
-pub const COMBO_MAIN: &str = "main";
-pub const COMBO_UNDO: &str = "undo";
-/// Исправить раскладку («ghbdtn» → «привет»).
-pub const COMBO_LAYOUT: &str = "layout";
-pub const COMBO_STYLE_PREFIX: &str = "style:";
+pub use restyle_core::hotkey::{COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
 
 /// События hotkey-потока для control-цикла.
 #[derive(Debug)]

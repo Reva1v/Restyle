@@ -41,7 +41,7 @@ pub fn foreground() -> Foreground {
 /// Видимое приложение с окном: exe + заголовок окна.
 #[derive(Clone, Debug, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RunningApp {
     /// Имя exe, как его видят списки настроек (`Telegram.exe`).
     pub exe: String,
@@ -61,7 +61,7 @@ pub fn running_apps() -> Vec<RunningApp> {
     found
 }
 
-unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL { unsafe {
     let out = &mut *(lparam.0 as *mut Vec<RunningApp>);
     if !IsWindowVisible(hwnd).as_bool() {
         return true.into();
@@ -91,7 +91,7 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
     out.push(RunningApp { exe, title });
     true.into()
-}
+}}
 
 fn process_exe(pid: u32) -> Option<String> {
     unsafe {

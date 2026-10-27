@@ -4,17 +4,12 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod capture;
+use restyle_core::{ai, capture, history, screenshot, secrets, textfx, translate};
+
 mod control;
-mod ai;
-mod history;
 mod hotkey;
 mod ipc;
-mod screenshot;
-mod secrets;
 mod settings;
-mod textfx;
-mod translate;
 mod tray;
 mod update;
 mod window;

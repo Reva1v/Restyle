@@ -37,6 +37,12 @@ pub struct Gemini {
     base_url: String,
 }
 
+impl Default for Gemini {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Gemini {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()

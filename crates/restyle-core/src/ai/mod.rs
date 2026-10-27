@@ -32,7 +32,7 @@ pub fn system_prompt(config_dir: Option<std::path::PathBuf>) -> String {
 /// Модель из каталога провайдера (окно настроек).
 #[derive(Clone, Debug, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct ModelInfo {
     /// Имя для API (`gemini-3.5-flash-lite`).
     pub id: String,

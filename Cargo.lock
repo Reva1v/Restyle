@@ -3298,11 +3298,9 @@ dependencies = [
 name = "restyle"
 version = "0.1.1"
 dependencies = [
- "base64 0.23.1",
- "futures-util",
  "image",
- "keyring",
  "reqwest",
+ "restyle-core",
  "serde",
  "serde_json",
  "tauri",
@@ -3320,6 +3318,18 @@ dependencies = [
 [[package]]
 name = "restyle-core"
 version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "futures-util",
+ "image",
+ "keyring",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "ts-rs",
+ "windows 0.62.2",
+]
 
 [[package]]
 name = "rfd"

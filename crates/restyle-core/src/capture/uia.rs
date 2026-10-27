@@ -44,7 +44,7 @@ pub struct UiaSel {
     pub len: i32,
 }
 
-unsafe fn selection_of(tp: &IUIAutomationTextPattern) -> Option<UiaSel> {
+unsafe fn selection_of(tp: &IUIAutomationTextPattern) -> Option<UiaSel> { unsafe {
     let sel = tp.GetSelection().ok()?;
     if sel.Length().ok()? < 1 {
         return None;
@@ -60,7 +60,7 @@ unsafe fn selection_of(tp: &IUIAutomationTextPattern) -> Option<UiaSel> {
         text,
         prefix,
     })
-}
+}}
 
 /// Выделить `len` символов с `start` в элементе последнего чтения (0 — просто
 /// каретка). `false` — у элемента нет TextPattern или он не дал выделить.
@@ -247,7 +247,7 @@ impl Client {
     }
 }
 
-unsafe fn write_to(el: &IUIAutomationElement, text: &str) -> Result<bool, UiaError> {
+unsafe fn write_to(el: &IUIAutomationElement, text: &str) -> Result<bool, UiaError> { unsafe {
     let Ok(u) = el.GetCurrentPattern(UIA_ValuePatternId) else { return Ok(false) };
     let vp: IUIAutomationValuePattern = match u.cast() {
         Ok(v) => v,
@@ -258,4 +258,4 @@ unsafe fn write_to(el: &IUIAutomationElement, text: &str) -> Result<bool, UiaErr
     }
     vp.SetValue(&windows::core::BSTR::from(text))?;
     Ok(true)
-}
+}}

@@ -37,7 +37,7 @@ struct Translation {
 /// Остаток бесплатной квоты: DeepL считает символы за расчётный период.
 #[derive(Clone, Copy, Debug, Deserialize, serde::Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct DeeplUsage {
     // DeepL отдаёт snake_case, фронту отдаём camelCase — отсюда alias.
     #[serde(alias = "character_count")]
@@ -134,7 +134,8 @@ mod tests {
 
     #[test]
     fn free_key_goes_to_free_host() {
-        std::env::remove_var("RESTYLE_DEEPL_BASE_URL");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("RESTYLE_DEEPL_BASE_URL") };
         assert_eq!(base_url("abc-123:fx"), FREE_HOST);
         assert_eq!(base_url("abc-123"), PRO_HOST);
     }

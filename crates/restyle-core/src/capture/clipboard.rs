@@ -30,13 +30,13 @@ thread_local! {
     static CLIP_UPDATED: Cell<bool> = const { Cell::new(false) };
 }
 
-unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT { unsafe {
     if msg == WM_CLIPBOARDUPDATE {
         CLIP_UPDATED.set(true);
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
-}
+}}
 
 /// Скрытое message-only окно + подписка на изменения клипборда.
 pub fn create_listener_window() -> Result<HWND, String> {

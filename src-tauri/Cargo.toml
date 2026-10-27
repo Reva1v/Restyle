@@ -8,6 +8,7 @@ description = "Restyle — rewrite the text you are typing with AI, in any app"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+restyle-core = { path = "../crates/restyle-core" }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
@@ -18,12 +19,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 ts-rs = "10"
 window-vibrancy = "0.6"
-base64 = "0.23.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 # native-tls = schannel: без aws-lc-sys (cmake/nasm) в сборке
 reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "charset", "json", "stream"] }
-futures-util = "0.3.34"
-keyring = "4.2.0"
 
 [dependencies.windows]
 version = "0.62"
