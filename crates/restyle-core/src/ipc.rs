@@ -24,10 +24,10 @@ use ts_rs::TS;
 /// `overlay:ring` — кольцо-индикатор удержания основной комбинации.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RingPayload {
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     pub x: i32,
     pub y: i32,
     pub dpi_scale: f32,
@@ -38,10 +38,10 @@ pub struct RingPayload {
 /// Payload событий `rewrite:*`.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RewriteStart {
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     /// id запроса внутри сессии: результат отменённой генерации не должен
     /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
     #[ts(type = "number")]
@@ -56,10 +56,10 @@ pub struct RewriteStart {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RewriteChunk {
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     /// id запроса внутри сессии: результат отменённой генерации не должен
     /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
     #[ts(type = "number")]
@@ -69,10 +69,10 @@ pub struct RewriteChunk {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RewriteDone {
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     /// id запроса внутри сессии: результат отменённой генерации не должен
     /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
     #[ts(type = "number")]
@@ -84,10 +84,10 @@ pub struct RewriteDone {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct RewriteError {
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     /// id запроса внутри сессии: результат отменённой генерации не должен
     /// попасть в новую (стиль сменили в момент, когда старый стрим уже кончился).
     #[ts(type = "number")]
@@ -98,11 +98,11 @@ pub struct RewriteError {
 /// Payload события `overlay:show`.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct ShowPayload {
     /// Поколение сессии — для корреляции с `rewrite:*`.
     #[ts(type = "number")]
-    pub gen: u64,
+    pub r#gen: u64,
     pub x: i32,
     pub y: i32,
     pub dpi_scale: f32,
@@ -121,7 +121,7 @@ pub struct ShowPayload {
 /// Payload события `overlay:screenshot` (сами байты во фронтенд не идут).
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct ScreenshotPayload {
     pub width: u32,
     pub height: u32,
@@ -133,7 +133,7 @@ pub struct ScreenshotPayload {
 /// Payload события `overlay:text`.
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct TextPayload {
     pub text: String,
     /// "uia" | "clipboard"

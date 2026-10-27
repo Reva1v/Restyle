@@ -35,20 +35,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::control::ControlMsg;
 use combo::ComboSet;
 
-pub use restyle_core::hotkey::{COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
+pub use restyle_core::hotkey::{HotkeyEvent, COMBO_MAIN, COMBO_STYLE_PREFIX};
 
-/// События hotkey-потока для control-цикла.
-#[derive(Debug)]
-pub enum HotkeyEvent {
-    /// Сработала комбинация `id` (см. константы выше); `at` — момент события
-    /// в колбэке хука (точка отсчёта бюджета 100 мс до оверлея).
-    Combo { id: String, at: Instant },
-    /// Комбинацию `id` отпустили. Для основной комбинации это развилка
-    /// «короткое нажатие» / «удержание»: см. `control.rs`.
-    ComboReleased { id: String },
-    /// Клавиша оверлея при видимой панели (проглочена хуком): Enter/Esc/Tab/R/стрелки/1-9.
-    PanelKey(u32),
-}
 
 // --- сообщения message loop hotkey-потока ---
 pub const WM_APP_REINSTALL: u32 = WM_APP + 1;

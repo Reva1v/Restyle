@@ -4,15 +4,14 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use restyle_core::{ai, capture, history, screenshot, secrets, textfx, translate};
+use restyle_core::session as control;
+use restyle_core::{ai, capture, history, secrets, translate, window};
 
-mod control;
+mod host;
 mod hotkey;
-mod ipc;
 mod settings;
 mod tray;
 mod update;
-mod window;
 
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
@@ -567,7 +566,8 @@ fn main() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ControlMsg>();
             let capture = capture::spawn();
             hotkey::spawn(tx.clone(), settings.combos());
-            control::spawn(rx, tx.clone(), app.handle().clone(), hwnd, menu_hwnd, capture);
+            let host = std::sync::Arc::new(host::TauriHost::new(app.handle().clone(), hwnd, menu_hwnd));
+            control::spawn(rx, tx.clone(), host, std::sync::Arc::new(control::WinPlatform::new(capture)));
             app.manage(CtrlTx(tx.clone()));
             app.manage(update::UpdateState::default());
 

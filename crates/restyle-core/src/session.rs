@@ -1,34 +1,193 @@
-//! Control-цикл: state-машина оверлея (hidden / visible / toast), захват текста,
-//! позиционирование, эмит событий во фронтенд, watchdog хука. Единственная
-//! точка, которая решает «показать/спрятать». Tokio-таск на рантайме Tauri.
+//! Сессия Restyle (бывший control-цикл приложения): state-машина оверлея
+//! (hidden / ring / visible / toast), захват текста, снимок экрана, запрос к
+//! модели, вставка и undo, быстрые стили, удержание, раскладка. Единственная
+//! точка, которая решает «показать/спрятать». Tokio-таск на рантайме хоста.
 //!
 //! Поток хоткея: Combo → маска Alt → foreground-процесс → запрос capture-потоку
 //! → ждём до `CAPTURE_SOFT_DEADLINE` → показ оверлея (текст уже есть или придёт
 //! `overlay:text`). Нет текста → тост «Нет текста», без оверлея.
 //!
-//! Все операции с HWND уходят на главный поток Tauri через
-//! `run_on_main_thread` — окно принадлежит ему.
+//! Ядро не знает про Tauri. Всё, что зависит от приложения, — за двумя трейтами:
+//!
+//! - [`Host`] — UI приложения: события фронтенду, окно панели и окно меню
+//!   (показ / сдвиг / скрытие), режим «клавиши панели» у хука, настройки,
+//!   каталог конфига, запуск задач на его рантайме, watchdog хука;
+//! - [`Platform`] — система: окно с фокусом, захват и вставка текста, буфер,
+//!   курсор и монитор, снимок экрана, раскладки, ключи, модель и перевод.
+//!   [`WinPlatform`] — настоящая реализация на WinAPI, keyring и сети; тесты
+//!   (`tests/session.rs`) подставляют фейк.
+//!
+//! Вход — сообщения [`ControlMsg`] в канал, который читает [`spawn`]: от хука
+//! (`Hotkey`), команд фронтенда (`SelectStyle`, `Paste`, `Hide`…) и своих задач.
+//! Выход — события через [`Host::emit`] (данные — типы из [`crate::ipc`]):
+//! `overlay:show|hide|key|ring|text|screenshot`,
+//! `rewrite:start|chunk|done|error|pending_paste`, `menu:show|hide|format`,
+//! `history-changed`.
+//!
+//! Операции с окнами хост выполняет там, где окно живёт (у Restyle — на
+//! главном потоке Tauri через `run_on_main_thread`).
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter, Manager};
+use serde::Serialize;
+use serde_json::value::RawValue;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::oneshot;
 
+use crate::ai::{self, AiError, BoxFuture, Provider, RewriteRequest};
 use crate::capture::text::{apply_line_ending, matches_process};
-use crate::capture::{self, process::Foreground, CaptureError, CaptureHandle, CaptureOptions, CaptureResult, Captured, PasteMethod, PasteOptions, PasteResult, TextSource};
+use crate::capture::{process::Foreground, CaptureError, CaptureHandle, CaptureOptions, CaptureResult, Captured, PasteMethod, PasteOptions, PasteResult, TextSource};
 use crate::history::{self, History, HistoryEntry, HistoryItem};
-use crate::hotkey::{self, HotkeyEvent, COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
+use crate::hotkey::{HotkeyEvent, COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
 use crate::textfx::{self, Cyr, FORMAT_PREFIX, LAYOUT_ID};
-use crate::ai::{self, AiError, RewriteRequest};
 use crate::ipc::{
     RewriteChunk, RewriteDone, RewriteError, RewriteStart, RingPayload, ScreenshotPayload,
     ShowPayload, TextPayload,
 };
-use crate::screenshot::{self, Encoded, Mode};
+use crate::screenshot::{self, Encoded, Mode, RawShot};
 use crate::secrets;
 use crate::settings::{self, Settings, StyleKind, REFINE_PREFIX};
 use crate::translate;
-use crate::window::{self, CURSOR_OFFSET, PANEL_H, PANEL_W};
+use crate::window::{self, Rect, CURSOR_OFFSET, PANEL_H, PANEL_W};
+
+/// Окно, которым управляет сессия.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// Панель: выбор стиля, результат, тост, кольцо удержания.
+    Panel,
+    /// Меню: меню трея и список регистров под кнопкой «Регистр».
+    Menu,
+}
+
+/// Прямоугольник окна в физических пикселях экрана.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PxRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+impl PxRect {
+    pub const fn new(x: i32, y: i32, w: i32, h: i32) -> Self {
+        Self { x, y, w, h }
+    }
+}
+
+/// Приложение, в котором живёт сессия (Restyle или остров).
+pub trait Host: Send + Sync + 'static {
+    /// Событие фронтенду: имя (см. доку модуля) и уже сериализованные данные.
+    fn emit(&self, event: &str, payload: &RawValue);
+    /// Показать окно без активации поверх всех (`SW_SHOWNA`, topmost).
+    fn show_panel(&self, surface: Surface, rect: PxRect);
+    /// Сдвинуть / изменить размер видимого окна без активации.
+    fn move_panel(&self, surface: Surface, rect: PxRect);
+    fn hide_panel(&self, surface: Surface);
+    /// Пока `on`, хук глотает клавиши панели (Enter, Esc, Tab, R, стрелки, 1–9)
+    /// и шлёт их сессии как `HotkeyEvent::PanelKey`.
+    fn panel_keys(&self, on: bool);
+    /// Меню видно в `rect` (хук мыши ловит клик мимо и Esc); `None` — скрыто.
+    fn menu_keys(&self, rect: Option<PxRect>);
+    /// Текущие настройки (читаются на каждом шаге сессии).
+    fn settings(&self) -> Settings;
+    /// Каталог конфига: `history.json`, `system_prompt.txt`; `None` — без диска.
+    fn config_dir(&self) -> Option<PathBuf>;
+    /// Запустить задачу на tokio-рантайме приложения.
+    fn spawn(&self, f: BoxFuture<'static, ()>);
+    /// Раз в 2 с из цикла сессии: watchdog хука клавиатуры.
+    fn tick(&self) {}
+}
+
+/// Система: всё, что сессия читает и делает вне приложения.
+pub trait Platform: Send + Sync + 'static {
+    fn foreground(&self) -> Foreground;
+    /// Ctrl down/up при зажатом Alt/Win: иначе отпускание Alt откроет меню окна.
+    fn mask_menu_activation(&self);
+    fn capture(&self, opts: CaptureOptions) -> oneshot::Receiver<CaptureResult>;
+    fn paste(&self, text: String, opts: PasteOptions) -> oneshot::Receiver<PasteResult>;
+    fn set_clipboard(&self, text: String) -> oneshot::Receiver<Result<(), String>>;
+    fn cursor_pos(&self) -> (i32, i32);
+    /// Рабочая область и DPI монитора под точкой.
+    fn monitor_at(&self, pt: (i32, i32)) -> (Rect, u32);
+    /// Сырой кадр (блокирующий вызов, идёт в `spawn_blocking`).
+    fn screenshot(&self, mode: Mode, hwnd: isize, cursor: (i32, i32)) -> Result<RawShot, String>;
+    /// Установлены ли раскладки (русская, украинская).
+    fn installed_cyrillic(&self) -> (bool, bool);
+    fn switch_layout(&self, hwnd: isize, primary_lang: u16);
+    /// Ключ Gemini (блокирующий вызов, keyring).
+    fn gemini_key(&self) -> Result<Option<String>, String>;
+    /// Ключ DeepL (блокирующий вызов, keyring).
+    fn deepl_key(&self) -> Result<Option<String>, String>;
+    fn provider(&self, model: &str) -> Box<dyn Provider>;
+    fn translate(&self, key: String, text: String, target_lang: String) -> BoxFuture<'static, Result<String, AiError>>;
+}
+
+/// Настоящая система: capture-поток (UIA, буфер, ввод), WinAPI, keyring,
+/// Gemini и DeepL.
+pub struct WinPlatform {
+    capture: CaptureHandle,
+}
+
+impl WinPlatform {
+    pub fn new(capture: CaptureHandle) -> Self {
+        Self { capture }
+    }
+}
+
+impl Platform for WinPlatform {
+    fn foreground(&self) -> Foreground {
+        crate::capture::process::foreground()
+    }
+    fn mask_menu_activation(&self) {
+        crate::capture::input::mask_menu_activation();
+    }
+    fn capture(&self, opts: CaptureOptions) -> oneshot::Receiver<CaptureResult> {
+        self.capture.capture(opts)
+    }
+    fn paste(&self, text: String, opts: PasteOptions) -> oneshot::Receiver<PasteResult> {
+        self.capture.paste(text, opts)
+    }
+    fn set_clipboard(&self, text: String) -> oneshot::Receiver<Result<(), String>> {
+        self.capture.set_clipboard(text)
+    }
+    fn cursor_pos(&self) -> (i32, i32) {
+        window::cursor_pos()
+    }
+    fn monitor_at(&self, pt: (i32, i32)) -> (Rect, u32) {
+        window::monitor_at(pt)
+    }
+    fn screenshot(&self, mode: Mode, hwnd: isize, cursor: (i32, i32)) -> Result<RawShot, String> {
+        screenshot::capture(mode, hwnd, cursor)
+    }
+    fn installed_cyrillic(&self) -> (bool, bool) {
+        window::installed_cyrillic()
+    }
+    fn switch_layout(&self, hwnd: isize, primary_lang: u16) {
+        window::switch_layout(hwnd, primary_lang)
+    }
+    fn gemini_key(&self) -> Result<Option<String>, String> {
+        secrets::get_api_key()
+    }
+    fn deepl_key(&self) -> Result<Option<String>, String> {
+        secrets::get_deepl_key()
+    }
+    fn provider(&self, model: &str) -> Box<dyn Provider> {
+        ai::provider_for(model)
+    }
+    fn translate(&self, key: String, text: String, target_lang: String) -> BoxFuture<'static, Result<String, AiError>> {
+        Box::pin(async move { translate::translate(&key, &text, &target_lang).await })
+    }
+}
+
+/// Сериализовать и отдать событие хосту. Ошибка сериализации — молча, как
+/// `let _ = app.emit(...)` раньше.
+fn emit<T: Serialize>(host: &dyn Host, event: &str, payload: T) {
+    if let Ok(raw) = serde_json::value::to_raw_value(&payload) {
+        host.emit(event, &raw);
+    }
+}
 
 /// Период watchdog хука.
 const TICK: Duration = Duration::from_secs(2);
@@ -69,11 +228,11 @@ pub enum ControlMsg {
     /// Фронтенд оверлея загрузился и подписался: повторить `overlay:show`, если видим.
     FrontendReady,
     /// Поздний результат захвата (после мягкого дедлайна); `gen` — поколение сессии.
-    Captured { gen: u64, result: CaptureResult },
+    Captured { r#gen: u64, result: CaptureResult },
     /// Скрыть тост, если он всё ещё того же поколения.
     ToastExpired(u64),
     /// JPEG готов (или кодирование упало).
-    ScreenshotReady { gen: u64, result: Result<Encoded, String> },
+    ScreenshotReady { r#gen: u64, result: Result<Encoded, String> },
     /// Фронтенд выбрал стиль (кнопка/Tab/цифры) — запустить генерацию.
     SelectStyle(String),
     /// Чип под результатом: уточнение (`shorter`…) или стиль перевода (id)
@@ -83,13 +242,13 @@ pub enum ControlMsg {
     Regenerate,
     /// Генерация завершилась (успех или ошибка) — снять хэндл. `req` — номер
     /// запроса в сессии: результат уже отменённого запроса отбрасывается.
-    Generated { gen: u64, req: u64, result: Result<String, AiError> },
+    Generated { r#gen: u64, req: u64, result: Result<String, AiError> },
     /// Enter в оверлее: вставить результат (или дождаться его и вставить).
     Paste,
     /// Хоткей/трей: вернуть предыдущий текст (повторно — снова результат).
     Undo,
     /// Вставка завершилась (capture-поток).
-    Pasted { gen: u64, result: PasteResult, entry: Box<HistoryEntry> },
+    Pasted { r#gen: u64, result: PasteResult, entry: Box<HistoryEntry> },
     /// Undo-вставка завершилась.
     Undone { result: PasteResult, restored_original: bool },
     /// Настройки истории изменились (диск, лимит записей).
@@ -113,9 +272,9 @@ pub enum ControlMsg {
     /// Тост померил себя во фронтенде: {ширина, высота} в логических px.
     ResizeToast(f32, f32),
     /// Удержание дотянуло до кольца-индикатора у курсора.
-    HoldRing { gen: u64 },
+    HoldRing { r#gen: u64 },
     /// Удержание дотянуло до открытия панели выбора.
-    HoldOpen { gen: u64 },
+    HoldOpen { r#gen: u64 },
     /// Трей собран — наполнить подменю тем, что уже прочитано с диска.
     RefreshTray,
     /// Кнопка «Регистр» в панели: границы кнопки в логических px окна оверлея.
@@ -201,15 +360,14 @@ struct Session {
 }
 
 struct Control {
-    app: AppHandle,
+    host: Arc<dyn Host>,
+    sys: Arc<dyn Platform>,
     tx: UnboundedSender<ControlMsg>,
-    capture: CaptureHandle,
-    hwnd: isize,
     state: PanelState,
     show_started: Option<Instant>,
     last_show: Option<ShowPayload>,
     /// Растёт на каждый показ; отсекает устаревшие Captured/ToastExpired.
-    gen: u64,
+    r#gen: u64,
     /// Растёт на каждый запрос генерации: смена стиля не меняет `gen`, а
     /// результат уже отменённого запроса мог успеть лечь в канал.
     req_seq: u64,
@@ -223,8 +381,6 @@ struct Control {
     history: History,
     /// Undo уже идёт — второй не запускаем.
     undo_in_flight: bool,
-    /// Окно своего меню трея (создаётся при старте, живёт скрытым).
-    menu_hwnd: isize,
     menu_visible: bool,
     /// Высота меню по содержимому и точка, у которой его открыли.
     menu_h: f32,
@@ -249,7 +405,7 @@ struct Control {
 /// истечения `long_press_open_ms` (панель выбора).
 struct Hold {
     /// Поколение сессии, к которому относится удержание.
-    gen: u64,
+    r#gen: u64,
     /// Момент нажатия — от него считаются оба порога.
     at: Instant,
     /// Панель уже открыта: отпускание больше ничего не решает.
@@ -257,6 +413,10 @@ struct Hold {
 }
 
 impl Control {
+    fn emit<T: Serialize>(&self, event: &str, payload: T) {
+        emit(&*self.host, event, payload);
+    }
+
     /// Геометрия панели у точки `cursor` при логической высоте `panel_h`.
     fn place_at(&self, cursor: (i32, i32), panel_h: f32) -> (i32, i32, i32, i32, f32) {
         self.place_sized(cursor, self.state_width(), panel_h)
@@ -272,7 +432,7 @@ impl Control {
     }
 
     fn place_sized(&self, cursor: (i32, i32), logical_w: f32, panel_h: f32) -> (i32, i32, i32, i32, f32) {
-        let (work, dpi) = window::monitor_at(cursor);
+        let (work, dpi) = self.sys.monitor_at(cursor);
         let scale = dpi as f32 / 96.0;
         let w = (logical_w * scale).round() as i32;
         let h = (panel_h * scale).round() as i32;
@@ -295,8 +455,7 @@ impl Control {
         }
         self.panel_h = h;
         let (x, y, w, ph, _) = self.place_at(self.anchor, h);
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::move_to(hwnd, x, y, w, ph));
+        self.host.move_panel(Surface::Panel, PxRect::new(x, y, w, ph));
     }
 
     /// Фронтенд померил карточку тоста: окно ужимается ровно под неё, иначе
@@ -313,29 +472,27 @@ impl Control {
         self.toast_w = w;
         self.panel_h = h;
         let (x, y, pw, ph, _) = self.place_sized(self.anchor, w, h);
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::move_to(hwnd, x, y, pw, ph));
+        self.host.move_panel(Surface::Panel, PxRect::new(x, y, pw, ph));
     }
 
     fn show_window(&mut self, at: Instant, payload: ShowPayload, x: i32, y: i32, w: i32, h: i32) {
         self.close_format_menu();
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::show_at(hwnd, x, y, w, h));
-        hotkey::set_panel_visible(payload.toast.is_none());
+        self.host.show_panel(Surface::Panel, PxRect::new(x, y, w, h));
+        self.host.panel_keys(payload.toast.is_none());
         self.state = if payload.toast.is_some() { PanelState::Toast } else { PanelState::Visible };
         self.show_started = Some(at);
-        let _ = self.app.emit("overlay:show", &payload);
+        self.emit("overlay:show", &payload);
         self.last_show = Some(payload);
     }
 
     fn show_overlay(&mut self, at: Instant, capturing: bool) {
-        self.anchor = window::cursor_pos();
+        self.anchor = self.sys.cursor_pos();
         self.panel_h = PANEL_H;
         // Кольцо могло сузить окно — панель считаем по своей ширине.
         let (x, y, w, h, scale) = self.place_sized(self.anchor, PANEL_W, self.panel_h);
         let s = self.session.as_ref();
         let payload = ShowPayload {
-            gen: self.gen,
+            r#gen: self.r#gen,
             x,
             y,
             dpi_scale: scale,
@@ -351,18 +508,17 @@ impl Control {
     /// Кольцо-индикатор удержания у курсора. Клавиши при нём не глотаем:
     /// пользователь ещё может отпустить комбинацию и получить быстрый стиль.
     fn show_ring(&mut self) {
-        let settings = settings::load(&self.app);
-        self.anchor = window::cursor_pos();
+        let settings = self.host.settings();
+        self.anchor = self.sys.cursor_pos();
         self.panel_h = RING_H;
         let (x, y, w, _h, scale) = self.place_sized(self.anchor, RING_W, self.panel_h);
         let h = (RING_H * scale).round() as i32;
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::show_at(hwnd, x, y, w, h));
+        self.host.show_panel(Surface::Panel, PxRect::new(x, y, w, h));
         self.state = PanelState::Ring;
-        let _ = self.app.emit(
+        self.emit(
             "overlay:ring",
             RingPayload {
-                gen: self.gen,
+                r#gen: self.r#gen,
                 x,
                 y,
                 dpi_scale: scale,
@@ -377,7 +533,7 @@ impl Control {
         if style_id.is_empty() || self.session.is_none() {
             return;
         }
-        let auto_paste = settings::load(&self.app).auto_paste;
+        let auto_paste = self.host.settings().auto_paste;
         let captured = {
             let Some(s) = self.session.as_mut() else { return };
             s.style_id = Some(style_id.clone());
@@ -394,10 +550,9 @@ impl Control {
         } else if self.state == PanelState::Ring {
             // Кольцо убираем, но сессию оставляем: захват ещё идёт, и
             // `Captured` покажет панель и запустит стиль, когда текст придёт.
-            let hwnd = self.hwnd;
-            let _ = self.app.run_on_main_thread(move || window::hide(hwnd));
+            self.host.hide_panel(Surface::Panel);
             self.state = PanelState::Hidden;
-            let _ = self.app.emit("overlay:hide", ());
+            self.emit("overlay:hide", ());
         }
         self.maybe_start_generation();
     }
@@ -406,14 +561,13 @@ impl Control {
     /// LL-хуком мыши, а не событием потери фокуса.
     fn show_tray_menu(&mut self) {
         self.menu_mode = MenuMode::Tray;
-        let cursor = window::cursor_pos();
+        let cursor = self.sys.cursor_pos();
         self.menu_anchor = cursor;
         let (x, y, w, h, scale) = self.place_menu(cursor, self.menu_h);
-        let hwnd = self.menu_hwnd;
-        let _ = self.app.run_on_main_thread(move || window::show_at(hwnd, x, y, w, h));
+        self.host.show_panel(Surface::Menu, PxRect::new(x, y, w, h));
         self.menu_visible = true;
-        hotkey::set_menu_visible(true, (x, y, w, h));
-        let _ = self.app.emit("menu:show", scale);
+        self.host.menu_keys(Some(PxRect::new(x, y, w, h)));
+        self.emit("menu:show", scale);
     }
 
     fn close_tray_menu(&mut self) {
@@ -424,15 +578,14 @@ impl Control {
         if self.menu_mode == MenuMode::Format {
             self.fmt_closed_at = Some(Instant::now());
         }
-        hotkey::set_menu_visible(false, (0, 0, 0, 0));
-        let hwnd = self.menu_hwnd;
-        let _ = self.app.run_on_main_thread(move || window::hide(hwnd));
-        let _ = self.app.emit("menu:hide", ());
+        self.host.menu_keys(None);
+        self.host.hide_panel(Surface::Menu);
+        self.emit("menu:hide", ());
     }
 
     /// Геометрия меню у курсора (та же обрезка по рабочей области, что у панели).
     fn place_menu(&self, cursor: (i32, i32), logical_h: f32) -> (i32, i32, i32, i32, f32) {
-        let (work, dpi) = window::monitor_at(cursor);
+        let (work, dpi) = self.sys.monitor_at(cursor);
         let scale = dpi as f32 / 96.0;
         let w = (MENU_W * scale).round() as i32;
         let h = (logical_h * scale).round() as i32;
@@ -441,14 +594,14 @@ impl Control {
     }
 
     fn show_toast(&mut self, text: &str) {
-        self.gen += 1;
+        self.r#gen += 1;
         self.session = None;
-        self.anchor = window::cursor_pos();
+        self.anchor = self.sys.cursor_pos();
         self.panel_h = TOAST_H;
         self.toast_w = estimate_toast_width(text);
         let (x, y, w, th, scale) = self.place_sized(self.anchor, self.toast_w, self.panel_h);
         let payload = ShowPayload {
-            gen: self.gen,
+            r#gen: self.r#gen,
             x,
             y,
             dpi_scale: scale,
@@ -460,12 +613,12 @@ impl Control {
         };
         self.show_window(Instant::now(), payload, x, y, w, th);
         let tx = self.tx.clone();
-        let gen = self.gen;
+        let r#gen = self.r#gen;
         let hold = self.toast_hold.take().unwrap_or(TOAST_DURATION);
-        tauri::async_runtime::spawn(async move {
+        self.host.spawn(Box::pin(async move {
             tokio::time::sleep(hold).await;
-            let _ = tx.send(ControlMsg::ToastExpired(gen));
-        });
+            let _ = tx.send(ControlMsg::ToastExpired(r#gen));
+        }));
     }
 
     /// Оборвать текущую генерацию (drop future → reqwest закрывает стрим).
@@ -489,7 +642,7 @@ impl Control {
     /// рабочей области — над ней. Панель при этом не двигается.
     fn place_format_menu(&self, logical_h: f32) -> (i32, i32, i32, i32) {
         let (bx, top, bottom) = self.fmt_btn;
-        let (work, dpi) = window::monitor_at((bx, top));
+        let (work, dpi) = self.sys.monitor_at((bx, top));
         let scale = dpi as f32 / 96.0;
         let w = (FMT_MENU_W * scale).round() as i32;
         let h = (logical_h * scale).round() as i32;
@@ -521,24 +674,22 @@ impl Control {
         self.fmt_btn = (x + px(left), y + px(top), y + px(bottom));
         self.menu_mode = MenuMode::Format;
         // Сначала содержимое, потом окно: иначе первый кадр — старое меню трея.
-        let _ = self.app.emit("menu:format", serde_json::json!({ "scale": scale, "current": current }));
+        self.emit("menu:format", serde_json::json!({ "scale": scale, "current": current }));
         let (mx, my, mw, mh) = self.place_format_menu(self.fmt_h);
-        let hwnd = self.menu_hwnd;
-        let _ = self.app.run_on_main_thread(move || window::show_at(hwnd, mx, my, mw, mh));
+        self.host.show_panel(Surface::Menu, PxRect::new(mx, my, mw, mh));
         self.menu_visible = true;
-        hotkey::set_menu_visible(true, (mx, my, mw, mh));
+        self.host.menu_keys(Some(PxRect::new(mx, my, mw, mh)));
     }
 
     fn hide(&mut self) {
         self.close_format_menu();
         self.abort_generation();
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::hide(hwnd));
-        hotkey::set_panel_visible(false);
+        self.host.hide_panel(Surface::Panel);
+        self.host.panel_keys(false);
         self.state = PanelState::Hidden;
         self.session = None;
-        self.gen += 1;
-        let _ = self.app.emit("overlay:hide", ());
+        self.r#gen += 1;
+        self.emit("overlay:hide", ());
     }
 
     /// Перестроить подменю трея «Последние переписывания». Пункты меню сами
@@ -572,19 +723,19 @@ impl Control {
                 s.paste_selection = sp.only_selection;
                 s.caret = caret;
             }
-            let gen = self.gen;
-            let _ = self.app.emit(
+            let r#gen = self.r#gen;
+            self.emit(
                 "rewrite:start",
-                RewriteStart { gen, req, style_id: style_id.clone(), with_screenshot: false, refine: None },
+                RewriteStart { r#gen, req, style_id: style_id.clone(), with_screenshot: false, refine: None },
             );
-            let _ = self.app.emit(
+            self.emit(
                 "rewrite:done",
-                RewriteDone { gen, req, text: sp.shown, elapsed_ms: 0.0, first_chunk_ms: 0.0 },
+                RewriteDone { r#gen, req, text: sp.shown, elapsed_ms: 0.0, first_chunk_ms: 0.0 },
             );
-            let _ = self.tx.send(ControlMsg::Generated { gen, req, result: Ok(sp.paste) });
+            let _ = self.tx.send(ControlMsg::Generated { r#gen, req, result: Ok(sp.paste) });
             return;
         }
-        let settings = settings::load(&self.app);
+        let settings = self.host.settings();
         // Уточнение: вход — предыдущий результат; стиль либо зашитый
         // (`refine:shorter`), либо стиль перевода пользователя.
         let base_text = s.base_text.clone();
@@ -594,9 +745,9 @@ impl Control {
             None => settings.styles.iter().find(|st| st.id == style_id).cloned(),
         };
         let Some(style) = style else {
-            let _ = self.app.emit(
+            self.emit(
                 "rewrite:error",
-                RewriteError { gen: self.gen, req: self.req_seq, message: format!("Стиль «{style_id}» не найден") },
+                RewriteError { r#gen: self.r#gen, req: self.req_seq, message: format!("Стиль «{style_id}» не найден") },
             );
             return;
         };
@@ -621,7 +772,7 @@ impl Control {
             .map(|st| (st.name.clone(), st.instruction.clone()));
 
         let mut req = RewriteRequest {
-            system_prompt: ai::system_prompt(self.app.path().app_config_dir().ok()),
+            system_prompt: ai::system_prompt(self.host.config_dir()),
             style_name: style.name.clone(),
             style_instruction: style.instruction.clone(),
             text: base_text.unwrap_or_else(|| captured.text.clone()),
@@ -637,11 +788,11 @@ impl Control {
         self.abort_generation();
         self.req_seq += 1;
         let req_id = self.req_seq;
-        let gen = self.gen;
+        let r#gen = self.r#gen;
         let with_screenshot = req.screenshot_jpeg_base64.is_some();
-        let _ = self.app.emit(
+        self.emit(
             "rewrite:start",
-            RewriteStart { gen, req: req_id, style_id: style.id.clone(), with_screenshot, refine: refine.clone() },
+            RewriteStart { r#gen, req: req_id, style_id: style.id.clone(), with_screenshot, refine: refine.clone() },
         );
         println!(
             "[restyle] rewrite start: style={} model={} screenshot={with_screenshot} refine={} chars={}",
@@ -651,7 +802,8 @@ impl Control {
             req.text.chars().count()
         );
 
-        let app = self.app.clone();
+        let app = self.host.clone();
+        let sys = self.sys.clone();
         let tx = self.tx.clone();
         let handle = tokio::spawn(async move {
             let t0 = Instant::now();
@@ -659,11 +811,14 @@ impl Control {
             // --- перевод (DeepL) --------------------------------------------
             let mut req = req;
             if let Some(lang) = translate_to {
-                let key = tokio::task::spawn_blocking(secrets::get_deepl_key)
+                let key = {
+                    let sys = sys.clone();
+                    tokio::task::spawn_blocking(move || sys.deepl_key())
+                }
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()));
                 match key {
-                    Ok(Some(k)) => match translate::translate(&k, &req.text, &lang).await {
+                    Ok(Some(k)) => match sys.translate(k, req.text.clone(), lang.clone()).await {
                         Ok(translated) => {
                             println!(
                                 "[restyle] DeepL → {lang}: {:.0} мс, {} символов",
@@ -673,26 +828,26 @@ impl Control {
                             if post.is_none() {
                                 // Причёсывать нечем — перевод и есть результат.
                                 let elapsed_ms = t0.elapsed().as_secs_f32() * 1000.0;
-                                let _ = app.emit("rewrite:chunk", RewriteChunk { gen, req: req_id, text: translated.clone() });
-                                let _ = app.emit(
+                                emit(&*app, "rewrite:chunk", RewriteChunk { r#gen, req: req_id, text: translated.clone() });
+                                emit(&*app,
                                     "rewrite:done",
                                     RewriteDone {
-                                        gen,
+                                        r#gen,
                                         req: req_id,
                                         text: translated.clone(),
                                         elapsed_ms,
                                         first_chunk_ms: elapsed_ms,
                                     },
                                 );
-                                let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Ok(translated) });
+                                let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result: Ok(translated) });
                                 return;
                             }
                             req.text = translated;
                         }
                         Err(e) => {
                             eprintln!("[restyle] DeepL: {e:?}");
-                            let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: e.user_message() });
-                            let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(e) });
+                            emit(&*app, "rewrite:error", RewriteError { r#gen, req: req_id, message: e.user_message() });
+                            let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result: Err(e) });
                             return;
                         }
                     },
@@ -702,25 +857,28 @@ impl Control {
                 }
             }
 
-            let key_result = match tokio::task::spawn_blocking(secrets::get_api_key).await {
+            let key_result = match {
+                let sys = sys.clone();
+                tokio::task::spawn_blocking(move || sys.gemini_key())
+            }.await {
                 Ok(r) => r,
                 Err(e) => Err(e.to_string()),
             };
             let key = match key_result {
                 Ok(Some(k)) => k,
                 Ok(None) => {
-                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: AiError::NoApiKey.user_message() });
-                    let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(AiError::NoApiKey) });
+                    emit(&*app, "rewrite:error", RewriteError { r#gen, req: req_id, message: AiError::NoApiKey.user_message() });
+                    let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result: Err(AiError::NoApiKey) });
                     return;
                 }
                 Err(e) => {
                     let err = AiError::Other(e);
-                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: err.user_message() });
-                    let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result: Err(err) });
+                    emit(&*app, "rewrite:error", RewriteError { r#gen, req: req_id, message: err.user_message() });
+                    let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result: Err(err) });
                     return;
                 }
             };
-            let provider = ai::provider_for(&req.model);
+            let provider = sys.provider(&req.model);
             let (ctx, mut crx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let app2 = app.clone();
             let first_chunk = std::sync::Arc::new(std::sync::Mutex::new(None::<f32>));
@@ -734,7 +892,7 @@ impl Control {
                         println!("[restyle] first chunk in {ms:.0} ms");
                     }
                     drop(g);
-                    let _ = app2.emit("rewrite:chunk", RewriteChunk { gen, req: req_id, text });
+                    emit(&*app2, "rewrite:chunk", RewriteChunk { r#gen, req: req_id, text });
                 }
             });
             let result = provider.rewrite(&key, &req, ctx).await;
@@ -744,17 +902,17 @@ impl Control {
                 Ok(text) => {
                     let first = first_chunk.lock().unwrap().unwrap_or(elapsed_ms);
                     println!("[restyle] rewrite done in {elapsed_ms:.0} ms, {} chars", text.chars().count());
-                    let _ = app.emit(
+                    emit(&*app,
                         "rewrite:done",
-                        RewriteDone { gen, req: req_id, text: text.clone(), elapsed_ms, first_chunk_ms: first },
+                        RewriteDone { r#gen, req: req_id, text: text.clone(), elapsed_ms, first_chunk_ms: first },
                     );
                 }
                 Err(e) => {
                     eprintln!("[restyle] rewrite error: {e:?}");
-                    let _ = app.emit("rewrite:error", RewriteError { gen, req: req_id, message: e.user_message() });
+                    emit(&*app, "rewrite:error", RewriteError { r#gen, req: req_id, message: e.user_message() });
                 }
             }
-            let _ = tx.send(ControlMsg::Generated { gen, req: req_id, result });
+            let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result });
         });
         if let Some(s) = &mut self.session {
             s.generation = Some(handle);
@@ -775,7 +933,7 @@ impl Control {
             if let Some(s) = &mut self.session {
                 s.paste_on_done = true;
             }
-            let _ = self.app.emit("rewrite:pending_paste", self.gen);
+            self.emit("rewrite:pending_paste", self.r#gen);
             return;
         };
         // Всё нужное — во владение, чтобы отпустить заём сессии.
@@ -783,7 +941,7 @@ impl Control {
         let target_hwnd = s.target.hwnd;
         let target_exe = s.target.exe.clone();
         let text = apply_line_ending(result, captured.line_ending);
-        let settings = settings::load(&self.app);
+        let settings = self.host.settings();
         let select_only = captured.selection_only || s.paste_selection;
         let opts = PasteOptions {
             prefer_uia: captured.uia_writable && !select_only,
@@ -813,28 +971,27 @@ impl Control {
             self.show_toast("Пустой результат — нечего вставлять");
             return;
         }
-        let fg = capture::process::foreground();
+        let fg = self.sys.foreground();
         if fg.hwnd != target_hwnd {
             eprintln!("[restyle] paste: фокус ушёл из {target_exe} в {}", fg.exe);
             self.hide();
             self.show_toast("Окно сменилось — вставка отменена");
             return;
         }
-        let gen = self.gen;
+        let r#gen = self.r#gen;
         println!("[restyle] paste: {chars} chars via {}", if opts.prefer_uia { "uia?" } else { "clipboard" });
         // Прячем оверлей до вставки: он без фокуса, но лишний кадр не нужен.
         self.close_format_menu();
-        let hwnd = self.hwnd;
-        let _ = self.app.run_on_main_thread(move || window::hide(hwnd));
-        hotkey::set_panel_visible(false);
+        self.host.hide_panel(Surface::Panel);
+        self.host.panel_keys(false);
         self.state = PanelState::Hidden;
-        let _ = self.app.emit("overlay:hide", ());
-        let rx = self.capture.paste(text, opts);
+        self.emit("overlay:hide", ());
+        let rx = self.sys.paste(text, opts);
         let tx = self.tx.clone();
-        tauri::async_runtime::spawn(async move {
+        self.host.spawn(Box::pin(async move {
             let result = rx.await.unwrap_or_else(|_| Err("capture-поток завершился".into()));
-            let _ = tx.send(ControlMsg::Pasted { gen, result, entry: Box::new(entry) });
-        });
+            let _ = tx.send(ControlMsg::Pasted { r#gen, result, entry: Box::new(entry) });
+        }));
     }
 
     fn do_undo(&mut self) {
@@ -857,15 +1014,15 @@ impl Control {
         let text = if restore_original { e.original.clone() } else { e.result.clone() };
         let le = history::line_ending_from_str(&e.line_ending);
         let text = apply_line_ending(&text, le);
-        let fg = capture::process::foreground();
+        let fg = self.sys.foreground();
         if e.select_only {
             // Выделение уже не восстановить — отдаём текст в буфер.
-            let rx = self.capture.set_clipboard(text);
+            let rx = self.sys.set_clipboard(text);
             let tx = self.tx.clone();
-            tauri::async_runtime::spawn(async move {
+            self.host.spawn(Box::pin(async move {
                 let result = rx.await.unwrap_or_else(|_| Err("capture-поток завершился".into()));
                 let _ = tx.send(ControlMsg::Undone { result: result.map(|_| PasteMethod::Clipboard), restored_original: false });
-            });
+            }));
             self.show_toast(if restore_original { "Исходный текст скопирован в буфер" } else { "Результат скопирован в буфер" });
             return;
         }
@@ -876,23 +1033,23 @@ impl Control {
         let opts = PasteOptions {
             prefer_uia: e.via_uia,
             select_only: false,
-            restore_clipboard: settings::load(&self.app).restore_clipboard,
+            restore_clipboard: self.host.settings().restore_clipboard,
             caret: None,
         };
         self.undo_in_flight = true;
         if self.state != PanelState::Hidden {
             self.hide();
         }
-        let rx = self.capture.paste(text, opts);
+        let rx = self.sys.paste(text, opts);
         let tx = self.tx.clone();
-        tauri::async_runtime::spawn(async move {
+        self.host.spawn(Box::pin(async move {
             let result = rx.await.unwrap_or_else(|_| Err("capture-поток завершился".into()));
             let _ = tx.send(ControlMsg::Undone { result, restored_original: restore_original });
-        });
+        }));
     }
 
     fn emit_text(&self, c: &Captured) {
-        let _ = self.app.emit(
+        self.emit(
             "overlay:text",
             TextPayload {
                 text: c.text.clone(),
@@ -908,7 +1065,7 @@ impl Control {
     }
 
     fn emit_screenshot(&self, e: &Encoded) {
-        let _ = self.app.emit(
+        self.emit(
             "overlay:screenshot",
             ScreenshotPayload {
                 width: e.width,
@@ -923,7 +1080,7 @@ impl Control {
     /// Снимок экрана для новой сессии: решает по настройкам, снимает сырой
     /// кадр (blocking-таск, ждём до SCREENSHOT_DEADLINE), кодирование уходит
     /// в фон и вернётся `ScreenshotReady`.
-    async fn take_screenshot(&mut self, settings: &Settings, target: &Foreground, gen: u64) -> Shot {
+    async fn take_screenshot(&mut self, settings: &Settings, target: &Foreground, r#gen: u64) -> Shot {
         if !settings.screenshot_enabled {
             return Shot::None("off");
         }
@@ -933,8 +1090,9 @@ impl Control {
         }
         let mode = Mode::from_setting(&settings.screenshot_mode);
         let hwnd = target.hwnd;
-        let cursor = window::cursor_pos();
-        let job = tokio::task::spawn_blocking(move || screenshot::capture(mode, hwnd, cursor));
+        let cursor = self.sys.cursor_pos();
+        let sys = self.sys.clone();
+        let job = tokio::task::spawn_blocking(move || sys.screenshot(mode, hwnd, cursor));
         let raw = match tokio::time::timeout(SCREENSHOT_DEADLINE, job).await {
             Ok(Ok(Ok(raw))) => raw,
             Ok(Ok(Err(e))) => {
@@ -952,13 +1110,13 @@ impl Control {
         };
         println!("[restyle] screenshot captured in {:.1} ms", raw.capture.as_secs_f64() * 1000.0);
         let tx = self.tx.clone();
-        tauri::async_runtime::spawn(async move {
+        self.host.spawn(Box::pin(async move {
             let result = match tokio::task::spawn_blocking(move || screenshot::encode(raw)).await {
                 Ok(r) => r,
                 Err(e) => Err(format!("encode task: {e}")),
             };
-            let _ = tx.send(ControlMsg::ScreenshotReady { gen, result });
-        });
+            let _ = tx.send(ControlMsg::ScreenshotReady { r#gen, result });
+        }));
         Shot::Encoding
     }
 
@@ -1011,16 +1169,16 @@ impl Control {
     /// Хоткей раскладки: прочитать текст, перевести «ghbdtn» ↔ «привет» и сразу
     /// вставить — без панели. Направление определяется по буквам текста.
     async fn fix_layout(&mut self, at: Instant) {
-        capture::input::mask_menu_activation();
+        self.sys.mask_menu_activation();
         if self.state != PanelState::Hidden {
             self.hide();
             tokio::time::sleep(HIDE_SETTLE).await;
         }
-        let settings = settings::load(&self.app);
-        let target = capture::process::foreground();
+        let settings = self.host.settings();
+        let target = self.sys.foreground();
         let select_only = matches_process(&settings.select_only_processes, &target.exe);
-        self.gen += 1;
-        let rx = self.capture.capture(CaptureOptions { select_only, force_clipboard: false });
+        self.r#gen += 1;
+        let rx = self.sys.capture(CaptureOptions { select_only, force_clipboard: false });
         let captured = match tokio::time::timeout(Duration::from_millis(1500), rx).await {
             Ok(Ok(Ok(c))) => c,
             Ok(Ok(Err(e))) => {
@@ -1037,7 +1195,7 @@ impl Control {
                 return;
             }
         };
-        let (ru, uk) = window::installed_cyrillic();
+        let (ru, uk) = self.sys.installed_cyrillic();
         let cyr = if uk && (!ru || settings.language == "uk") { Cyr::Uk } else { Cyr::Ru };
         let sel = captured.selection.as_ref().map(|x| (x.text.as_str(), x.start_chars));
         let mut to = textfx::Layout::En;
@@ -1080,7 +1238,7 @@ impl Control {
             caret,
             base_text: None,
         });
-        window::switch_layout(hwnd, to.primary_lang());
+        self.sys.switch_layout(hwnd, to.primary_lang());
         self.do_paste();
     }
 
@@ -1090,10 +1248,10 @@ impl Control {
     /// захват идёт сразу, а панель ждёт решения развилки.
     async fn start(&mut self, at: Instant, style_id: Option<String>, hold_mode: bool) {
         // Проглоченная клавиша + отпускание Alt = меню окна; маскируем сразу.
-        capture::input::mask_menu_activation();
+        self.sys.mask_menu_activation();
 
-        let settings = settings::load(&self.app);
-        let target = capture::process::foreground();
+        let settings = self.host.settings();
+        let target = self.sys.foreground();
         let select_only = matches_process(&settings.select_only_processes, &target.exe);
         println!(
             "[restyle] hotkey in {} (select_only={select_only}, hold={hold_mode})",
@@ -1107,10 +1265,10 @@ impl Control {
             tokio::time::sleep(HIDE_SETTLE).await;
         }
 
-        self.gen += 1;
-        let gen = self.gen;
+        self.r#gen += 1;
+        let r#gen = self.r#gen;
         let quick = style_id.is_some();
-        self.hold = if hold_mode { Some(Hold { gen, at, opened: false }) } else { None };
+        self.hold = if hold_mode { Some(Hold { r#gen, at, opened: false }) } else { None };
         if hold_mode {
             // Кольцо и панель — два таймера от момента нажатия; оба проверяют
             // поколение, поэтому новый хоткей их обесценивает.
@@ -1120,20 +1278,20 @@ impl Control {
             ] {
                 let tx = self.tx.clone();
                 let left = Duration::from_millis(delay as u64).saturating_sub(at.elapsed());
-                tauri::async_runtime::spawn(async move {
+                self.host.spawn(Box::pin(async move {
                     tokio::time::sleep(left).await;
                     let _ = tx.send(if open {
-                        ControlMsg::HoldOpen { gen }
+                        ControlMsg::HoldOpen { r#gen }
                     } else {
-                        ControlMsg::HoldRing { gen }
+                        ControlMsg::HoldRing { r#gen }
                     });
-                });
+                }));
             }
         }
 
         // Текст и экран — параллельно: захват текста уже идёт на capture-потоке,
         // пока здесь снимается кадр.
-        let mut rx = self.capture.capture(CaptureOptions { select_only, force_clipboard: false });
+        let mut rx = self.sys.capture(CaptureOptions { select_only, force_clipboard: false });
         // Быстрый стиль знает заранее, нужен ли ему кадр: если нет — не тратим
         // 20-60 мс на захват и кодирование.
         let wants_shot = style_id
@@ -1142,7 +1300,7 @@ impl Control {
             .map(|s| s.screenshot)
             .unwrap_or(true);
         let shot = if wants_shot {
-            self.take_screenshot(&settings, &target, gen).await
+            self.take_screenshot(&settings, &target, r#gen).await
         } else {
             Shot::None("off")
         };
@@ -1176,12 +1334,12 @@ impl Control {
                     self.show_overlay(at, true);
                 }
                 let tx = self.tx.clone();
-                tauri::async_runtime::spawn(async move {
+                self.host.spawn(Box::pin(async move {
                     let result = rx
                         .await
                         .unwrap_or_else(|_| Err(CaptureError::Failed("capture-поток завершился".into())));
-                    let _ = tx.send(ControlMsg::Captured { gen, result });
-                });
+                    let _ = tx.send(ControlMsg::Captured { r#gen, result });
+                }));
             }
         }
     }
@@ -1190,13 +1348,13 @@ impl Control {
         match msg {
             ControlMsg::Hotkey(HotkeyEvent::Combo { id, at }) => {
                 if id == COMBO_MAIN {
-                    let s = settings::load(&self.app);
+                    let s = self.host.settings();
                     let hold = s.long_press && !s.quick_style.is_empty();
                     self.start(at, None, hold).await;
                 } else if let Some(style) = id.strip_prefix(COMBO_STYLE_PREFIX) {
                     self.start(at, Some(style.to_string()), false).await;
                 } else if id == COMBO_UNDO {
-                    capture::input::mask_menu_activation();
+                    self.sys.mask_menu_activation();
                     self.do_undo();
                 } else if id == COMBO_LAYOUT {
                     self.fix_layout(at).await;
@@ -1208,12 +1366,12 @@ impl Control {
                 }
                 // Alt держали долго — маскируем ещё раз, иначе его отпускание
                 // откроет меню окна под оверлеем.
-                capture::input::mask_menu_activation();
+                self.sys.mask_menu_activation();
                 let Some(hold) = self.hold.take() else { return };
-                if hold.opened || hold.gen != self.gen {
+                if hold.opened || hold.r#gen != self.r#gen {
                     return;
                 }
-                let style = settings::load(&self.app).quick_style;
+                let style = self.host.settings().quick_style;
                 println!(
                     "[restyle] короткое нажатие ({} мс) — стиль {style}",
                     hold.at.elapsed().as_millis()
@@ -1239,9 +1397,8 @@ impl Control {
                 }
                 self.fmt_h = h;
                 let (x, y, w, ph) = self.place_format_menu(h);
-                let hwnd = self.menu_hwnd;
-                let _ = self.app.run_on_main_thread(move || window::move_to(hwnd, x, y, w, ph));
-                hotkey::set_menu_visible(true, (x, y, w, ph));
+                self.host.move_panel(Surface::Menu, PxRect::new(x, y, w, ph));
+                self.host.menu_keys(Some(PxRect::new(x, y, w, ph)));
             }
             ControlMsg::ResizeMenu(h) => {
                 let h = h.clamp(80.0, 620.0);
@@ -1252,20 +1409,19 @@ impl Control {
                 self.menu_h = h;
                 let cursor = self.menu_anchor;
                 let (x, y, w, ph, _) = self.place_menu(cursor, h);
-                let hwnd = self.menu_hwnd;
-                let _ = self.app.run_on_main_thread(move || window::move_to(hwnd, x, y, w, ph));
+                self.host.move_panel(Surface::Menu, PxRect::new(x, y, w, ph));
             }
-            ControlMsg::HoldRing { gen } => {
-                if self.hold.as_ref().is_some_and(|h| h.gen == gen && !h.opened)
+            ControlMsg::HoldRing { r#gen } => {
+                if self.hold.as_ref().is_some_and(|h| h.r#gen == r#gen && !h.opened)
                     && self.state == PanelState::Hidden
                 {
                     println!("[restyle] удержание: кольцо у курсора");
                     self.show_ring();
                 }
             }
-            ControlMsg::HoldOpen { gen } => {
+            ControlMsg::HoldOpen { r#gen } => {
                 let Some(hold) = self.hold.as_mut() else { return };
-                if hold.gen != gen || hold.opened {
+                if hold.r#gen != r#gen || hold.opened {
                     return;
                 }
                 hold.opened = true;
@@ -1285,7 +1441,7 @@ impl Control {
                     self.hide();
                 } else {
                     // Enter/Tab/R/стрелки/цифры: навигация оверлея на фронте
-                    let _ = self.app.emit("overlay:key", vk);
+                    self.emit("overlay:key", vk);
                 }
             }
             ControlMsg::Hide => {
@@ -1293,23 +1449,23 @@ impl Control {
                     self.hide();
                 }
             }
-            ControlMsg::Captured { gen, result } => {
+            ControlMsg::Captured { r#gen, result } => {
                 // Не только при видимой панели: при долгом нажатии она до развилки
                 // не показывается (state Hidden/Ring), а захват дольше 250 мс
                 // иначе терялся — панель зависала на «Читаю текст…».
-                if gen == self.gen && self.session.is_some() {
+                if r#gen == self.r#gen && self.session.is_some() {
                     let at = self.session.as_ref().map(|s| s.started).unwrap_or_else(Instant::now);
                     let visible = self.state == PanelState::Visible;
                     self.apply_capture(at, result, visible);
                 }
             }
-            ControlMsg::ToastExpired(gen) => {
-                if gen == self.gen && self.state == PanelState::Toast {
+            ControlMsg::ToastExpired(r#gen) => {
+                if r#gen == self.r#gen && self.state == PanelState::Toast {
                     self.hide();
                 }
             }
-            ControlMsg::ScreenshotReady { gen, result } => {
-                if gen != self.gen {
+            ControlMsg::ScreenshotReady { r#gen, result } => {
+                if r#gen != self.r#gen {
                     return;
                 }
                 match result {
@@ -1362,8 +1518,8 @@ impl Control {
                     self.maybe_start_generation();
                 }
             }
-            ControlMsg::Generated { gen, req, result } => {
-                if gen != self.gen {
+            ControlMsg::Generated { r#gen, req, result } => {
+                if r#gen != self.r#gen {
                     return;
                 }
                 let mut paste_now = false;
@@ -1395,14 +1551,14 @@ impl Control {
                 }
             }
             ControlMsg::Undo => self.do_undo(),
-            ControlMsg::Pasted { gen, result, mut entry } => {
+            ControlMsg::Pasted { r#gen, result, mut entry } => {
                 match result {
                     Ok(method) => {
                         println!("[restyle] pasted via {method:?}");
                         entry.via_uia = method == PasteMethod::Uia;
                         self.history.push(*entry);
                         self.refresh_tray_history();
-                        let _ = self.app.emit("history-changed", ());
+                        self.emit("history-changed", ());
                         // Подтверждения не показываем: переписанный текст уже
                         // стоит в поле, тост только перекрывал бы его.
                     }
@@ -1411,9 +1567,9 @@ impl Control {
                         self.show_toast("Не удалось вставить");
                     }
                 }
-                if gen == self.gen {
+                if r#gen == self.r#gen {
                     self.session = None;
-                    self.gen += 1;
+                    self.r#gen += 1;
                 }
             }
             ControlMsg::Undone { result, restored_original } => {
@@ -1431,7 +1587,7 @@ impl Control {
                         }
                         if changed {
                             self.history.save();
-                            let _ = self.app.emit("history-changed", ());
+                            self.emit("history-changed", ());
                         }
                     }
                     Err(e) => {
@@ -1455,24 +1611,24 @@ impl Control {
                 let Some(e) = self.history.nth_newest(index) else { return };
                 let le = history::line_ending_from_str(&e.line_ending);
                 let text = apply_line_ending(&e.result, le);
-                let rx = self.capture.set_clipboard(text);
-                tauri::async_runtime::spawn(async move {
+                let rx = self.sys.set_clipboard(text);
+                self.host.spawn(Box::pin(async move {
                     if let Ok(Err(e)) = rx.await {
                         eprintln!("[restyle] история → буфер: {e}");
                     }
-                });
+                }));
                 // Отклик показывает то окно, откуда копировали.
             }
             ControlMsg::ClearHistory => {
                 self.history.clear();
                 self.refresh_tray_history();
-                let _ = self.app.emit("history-changed", ());
+                self.emit("history-changed", ());
             }
             ControlMsg::RefreshTray => self.refresh_tray_history(),
             ControlMsg::FrontendReady => {
                 if self.state != PanelState::Hidden {
                     if let Some(p) = &self.last_show {
-                        let _ = self.app.emit("overlay:show", p);
+                        self.emit("overlay:show", p);
                     }
                     if let Some(c) = self.session.as_ref().and_then(|s| s.captured.as_ref()) {
                         self.emit_text(c);
@@ -1496,33 +1652,32 @@ impl Control {
     }
 }
 
+/// Запустить цикл сессии на рантайме хоста. `tx` — отправитель того же
+/// канала: им пользуются собственные задачи сессии.
 pub fn spawn(
     mut rx: UnboundedReceiver<ControlMsg>,
     tx: UnboundedSender<ControlMsg>,
-    app: AppHandle,
-    hwnd: isize,
-    menu_hwnd: isize,
-    capture: CaptureHandle,
+    host: Arc<dyn Host>,
+    sys: Arc<dyn Platform>,
 ) {
-    tauri::async_runtime::spawn(async move {
-        let settings = settings::load(&app);
-        let history_path = app.path().app_config_dir().ok().map(|d| d.join("history.json"));
+    let h = host.clone();
+    h.spawn(Box::pin(async move {
+        let settings = host.settings();
+        let history_path = host.config_dir().map(|d| d.join("history.json"));
         let mut ctl = Control {
             history: History::load(history_path, settings.history_to_disk, settings.history_limit as usize),
-            app,
+            host,
+            sys,
             tx,
-            capture,
-            hwnd,
             state: PanelState::Hidden,
             show_started: None,
             last_show: None,
-            gen: 0,
+            r#gen: 0,
             req_seq: 0,
             panel_h: PANEL_H,
             anchor: (0, 0),
             toast_hold: None,
             hold: None,
-            menu_hwnd,
             menu_visible: false,
             menu_h: MENU_H,
             toast_w: TOAST_W_MIN,
@@ -1543,8 +1698,8 @@ pub fn spawn(
                     Some(m) => ctl.handle(m).await,
                     None => break,
                 },
-                _ = tick.tick() => hotkey::watchdog_check(),
+                _ = tick.tick() => ctl.host.tick(),
             }
         }
-    });
+    }));
 }

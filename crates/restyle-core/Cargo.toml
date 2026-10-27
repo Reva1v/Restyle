@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 ts-rs = "10"
 base64 = "0.23.1"
