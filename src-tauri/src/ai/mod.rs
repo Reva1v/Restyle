@@ -104,9 +104,7 @@ impl AiError {
     pub fn from_reqwest(e: &reqwest::Error) -> Self {
         if e.is_timeout() {
             AiError::Timeout
-        } else if e.is_connect() || e.is_request() {
-            AiError::Network
-        } else if e.is_body() || e.is_decode() {
+        } else if e.is_connect() || e.is_request() || e.is_body() || e.is_decode() {
             AiError::Network
         } else {
             // URL из текста ошибки вырезаем: в нём могут быть параметры запроса.

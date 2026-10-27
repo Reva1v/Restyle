@@ -107,7 +107,7 @@ pub fn spawn(app: AppHandle) {
         tokio::time::sleep(FIRST_DELAY).await;
         let mut last: Option<Instant> = None;
         loop {
-            let due = last.map_or(true, |t| t.elapsed() >= INTERVAL);
+            let due = last.is_none_or(|t| t.elapsed() >= INTERVAL);
             if due && Settings::load(&app).check_updates {
                 last = Some(Instant::now());
                 match check_once(&current_version()).await {

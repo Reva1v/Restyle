@@ -122,11 +122,11 @@ fn grab(r: RECT) -> Result<(Vec<u8>, u32, u32), String> {
         if screen.is_invalid() {
             return Err("GetDC".into());
         }
-        let mem = CreateCompatibleDC(screen);
+        let mem = CreateCompatibleDC(Some(screen));
         let bmp = CreateCompatibleBitmap(screen, w, h);
-        let old = SelectObject(mem, bmp);
+        let old = SelectObject(mem, bmp.into());
         // CAPTUREBLT — включая слоистые окна (WS_EX_LAYERED), иначе они выпадут из кадра.
-        let blt = BitBlt(mem, 0, 0, w, h, screen, r.left, r.top, SRCCOPY | CAPTUREBLT);
+        let blt = BitBlt(mem, 0, 0, w, h, Some(screen), r.left, r.top, SRCCOPY | CAPTUREBLT);
         let mut out = Vec::new();
         let res = if let Err(e) = blt {
             Err(format!("BitBlt: {e}"))
@@ -160,7 +160,7 @@ fn grab(r: RECT) -> Result<(Vec<u8>, u32, u32), String> {
             }
         };
         SelectObject(mem, old);
-        let _ = DeleteObject(bmp);
+        let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem);
         ReleaseDC(None, screen);
         res.map(|_| (out, w as u32, h as u32))

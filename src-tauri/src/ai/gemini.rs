@@ -165,8 +165,7 @@ impl SseParser {
         }
         let mut events = Vec::new();
         // событие = блок до "\n\n" (терпим и "\r\n\r\n")
-        loop {
-            let Some(idx) = self.buf.find("\n\n") else { break };
+        while let Some(idx) = self.buf.find("\n\n") {
             let block = self.buf[..idx].to_string();
             self.buf.drain(..idx + 2);
             let mut data = String::new();

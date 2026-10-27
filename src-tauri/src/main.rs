@@ -197,7 +197,7 @@ async fn test_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
     let provider = ai::provider_for(&req.model);
     let (chunks, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
-    let out = provider.rewrite(&key.trim().to_string(), &req, chunks).await;
+    let out = provider.rewrite(key.trim(), &req, chunks).await;
     let _ = drain.await;
     out.map(|_| ()).map_err(|e| e.user_message())
 }
@@ -208,8 +208,7 @@ async fn test_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> 
 async fn list_models() -> Result<Vec<ai::ModelInfo>, String> {
     let key = tokio::task::spawn_blocking(secrets::get_api_key)
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e)?
+        .map_err(|e| e.to_string())??
         .ok_or_else(|| ai::AiError::NoApiKey.user_message())?;
     let list = ai::gemini::Gemini::new()
         .list_models(&key)
@@ -605,7 +604,7 @@ fn main() {
                     }
                     // RESTYLE_DEMO_SELECT=<мс>:<style_id> — выбрать стиль в открытой панели
                     // (инжектированные клавиши хук не видит, автотесту иначе не кликнуть).
-                    if let Some(v) = std::env::var("RESTYLE_DEMO_SELECT").ok() {
+                    if let Ok(v) = std::env::var("RESTYLE_DEMO_SELECT") {
                         if let Some((ms, id)) = v.split_once(':') {
                             if let Ok(ms) = ms.parse::<u64>() {
                                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;

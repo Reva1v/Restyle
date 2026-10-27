@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 
 use windows::core::Interface;
-use windows::Win32::Foundation::BOOL;
+use windows::core::BOOL;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,

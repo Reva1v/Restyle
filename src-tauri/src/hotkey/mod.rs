@@ -231,7 +231,7 @@ unsafe extern "system" fn kbd_proc(code: i32, wparam: WPARAM, lparam: LPARAM) ->
             }
         }
     }
-    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+    CallNextHookEx(None, code, wparam, lparam)
 }
 
 thread_local! {
@@ -281,7 +281,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
             }
         }
     }
-    CallNextHookEx(HHOOK::default(), code, wparam, lparam)
+    CallNextHookEx(None, code, wparam, lparam)
 }
 
 /// Меню трея открылось (`rect` — его геометрия) или закрылось.

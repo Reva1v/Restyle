@@ -60,9 +60,9 @@ pub fn create_listener_window() -> Result<HWND, String> {
             0,
             0,
             0,
-            HWND_MESSAGE,
+            Some(HWND_MESSAGE),
             None,
-            hinst,
+            Some(hinst.into()),
             None,
         )
         .map_err(|e| e.to_string())?;
@@ -79,7 +79,7 @@ pub fn create_listener_window() -> Result<HWND, String> {
 pub fn arm_update_flag(hwnd: HWND) {
     unsafe {
         let mut msg = MSG::default();
-        while PeekMessageW(&mut msg, hwnd, WM_CLIPBOARDUPDATE, WM_CLIPBOARDUPDATE, PM_REMOVE).as_bool() {}
+        while PeekMessageW(&mut msg, Some(hwnd), WM_CLIPBOARDUPDATE, WM_CLIPBOARDUPDATE, PM_REMOVE).as_bool() {}
     }
     CLIP_UPDATED.set(false);
 }
@@ -90,7 +90,7 @@ pub fn wait_update(hwnd: HWND, timeout: Duration) -> bool {
     unsafe {
         loop {
             let mut msg = MSG::default();
-            while PeekMessageW(&mut msg, hwnd, 0, 0, PM_REMOVE).as_bool() {
+            while PeekMessageW(&mut msg, Some(hwnd), 0, 0, PM_REMOVE).as_bool() {
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -113,7 +113,7 @@ pub fn sequence_number() -> u32 {
 /// OpenClipboard с повторами: другой процесс может держать его пару мс.
 fn open(hwnd: HWND) -> Result<Guard, String> {
     for _ in 0..25 {
-        if unsafe { OpenClipboard(hwnd) }.is_ok() {
+        if unsafe { OpenClipboard(Some(hwnd)) }.is_ok() {
             return Ok(Guard);
         }
         std::thread::sleep(Duration::from_millis(4));
@@ -185,7 +185,7 @@ fn alloc_global(bytes: &[u8]) -> Result<HGLOBAL, String> {
         let hg = GlobalAlloc(GMEM_MOVEABLE, bytes.len().max(1)).map_err(|e| e.to_string())?;
         let p = GlobalLock(hg);
         if p.is_null() {
-            let _ = GlobalFree(hg);
+            let _ = GlobalFree(Some(hg));
             return Err("GlobalLock".into());
         }
         std::ptr::copy_nonoverlapping(bytes.as_ptr(), p as *mut u8, bytes.len());
@@ -201,8 +201,8 @@ pub fn restore(hwnd: HWND, snap: &Snapshot) -> Result<(), String> {
         EmptyClipboard().map_err(|e| e.to_string())?;
         for (fmt, bytes) in &snap.formats {
             let hg = alloc_global(bytes)?;
-            if SetClipboardData(*fmt, HANDLE(hg.0)).is_err() {
-                let _ = GlobalFree(hg);
+            if SetClipboardData(*fmt, Some(HANDLE(hg.0))).is_err() {
+                let _ = GlobalFree(Some(hg));
             }
         }
     }
@@ -239,8 +239,8 @@ pub fn set_text(hwnd: HWND, text: &str) -> Result<(), String> {
     unsafe {
         EmptyClipboard().map_err(|e| e.to_string())?;
         let hg = alloc_global(bytes)?;
-        if let Err(e) = SetClipboardData(CF_UNICODETEXT, HANDLE(hg.0)) {
-            let _ = GlobalFree(hg);
+        if let Err(e) = SetClipboardData(CF_UNICODETEXT, Some(HANDLE(hg.0))) {
+            let _ = GlobalFree(Some(hg));
             return Err(e.to_string());
         }
     }

@@ -20,7 +20,7 @@ pub const MODEL_LITE: &str = "gemini-3.5-flash-lite";
 const STORE_KEY: &str = "settings";
 
 /// Описание комбинации: модификаторы + основная клавиша (VK-код). Как в HoldMix.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", default)]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct HotkeyCombo {
@@ -34,12 +34,6 @@ pub struct HotkeyCombo {
     pub extra_keys: Vec<u32>,
     /// Двойное нажатие единственного модификатора («Ctrl, Ctrl»); `key` = 0.
     pub double: bool,
-}
-
-impl Default for HotkeyCombo {
-    fn default() -> Self {
-        Self { ctrl: false, alt: false, shift: false, win: false, key: 0, extra_keys: Vec::new(), double: false }
-    }
 }
 
 impl HotkeyCombo {
@@ -615,6 +609,7 @@ fn clean_list(src: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

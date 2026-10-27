@@ -159,7 +159,7 @@ pub fn apply_rounded_corners(raw: isize) {
 pub fn show_at(raw: isize, x: i32, y: i32, w: i32, h: i32) {
     unsafe {
         let hw = hwnd(raw);
-        let _ = SetWindowPos(hw, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+        let _ = SetWindowPos(hw, Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
         let _ = ShowWindow(hw, SW_SHOWNA);
     }
 }
@@ -183,8 +183,8 @@ pub fn force_foreground(raw: isize) {
         let fg_thread = GetWindowThreadProcessId(fg, None);
         let attached = fg_thread != 0 && fg_thread != me && AttachThreadInput(me, fg_thread, true).as_bool();
         let _ = ShowWindow(target, SW_RESTORE);
-        let _ = SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-        let _ = SetWindowPos(target, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(target, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        let _ = SetWindowPos(target, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         let _ = BringWindowToTop(target);
         let _ = SetForegroundWindow(target);
         if attached {
@@ -222,7 +222,7 @@ pub fn switch_layout(raw: isize, primary_lang: u16) {
     use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_INPUTLANGCHANGEREQUEST};
     if let Some((_, hkl)) = layout_langs().into_iter().find(|(l, _)| *l == primary_lang) {
         unsafe {
-            let _ = PostMessageW(hwnd(raw), WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(hkl));
+            let _ = PostMessageW(Some(hwnd(raw)), WM_INPUTLANGCHANGEREQUEST, WPARAM(0), LPARAM(hkl));
         }
     }
 }
@@ -230,7 +230,7 @@ pub fn switch_layout(raw: isize, primary_lang: u16) {
 /// Подгон размера/позиции уже показанного окна — без активации и без Z-order.
 pub fn move_to(raw: isize, x: i32, y: i32, w: i32, h: i32) {
     unsafe {
-        let _ = SetWindowPos(hwnd(raw), HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
+        let _ = SetWindowPos(hwnd(raw), Some(HWND_TOPMOST), x, y, w, h, SWP_NOACTIVATE);
     }
 }
 
