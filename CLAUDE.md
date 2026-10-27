@@ -18,7 +18,7 @@ Windows-приложение (10 20H2+ / 11): пользователь печа�
 
 ## Стек (зафиксирован, не менять молча)
 
-- Tauri v2, Rust (крейт `windows` 0.58; не `winapi`, не `windows-sys` как основной)
+- Tauri v2, Rust (крейт `windows` 0.62, как у острова; не `winapi`, не `windows-sys` как основной)
 - React 18 + TypeScript + Vite, Tailwind CSS 3, Motion (анимации оверлея,
   разделов настроек, шагов мастера), шрифты IBM Plex Sans/Mono локально
   (`@fontsource`, без обращений в сеть)
@@ -28,7 +28,8 @@ Windows-приложение (10 20H2+ / 11): пользователь печа�
   `xcap` отвергнут по замеру (PrintWindow ≈ 110 мс на окно 2560×1400)
 - `keyring` — API-ключи (Gemini и DeepL) только в Windows Credential Manager,
   никогда в JSON/фронте
-- `tauri-plugin-store` (settings.json, ключ `settings`), `tauri-plugin-autostart`,
+- settings.json в формате `tauri-plugin-store` (ключ `settings`), но читает и пишет его
+  `restyle_core::settings` (плагин убран), `tauri-plugin-autostart`,
   `tauri-plugin-single-instance`, `tauri-plugin-dialog` (только Rust-API:
   импорт/экспорт стилей), `window-vibrancy`
 - Генерация TS-типов из Rust: `ts-rs` → `src/bindings/` (руками не править)
@@ -41,8 +42,8 @@ pnpm install                 # зависимости фронтенда
 pnpm tauri dev               # дев-режим (Vite :1430 + cargo)
 pnpm tauri build             # релизная сборка + MSI (WiX)
 pnpm build                   # только фронтенд (tsc + vite build)
-cargo test                   # юнит-тесты Rust (из src-tauri/); заодно экспорт ts-rs биндингов
-cargo clippy --all-targets   # линт Rust
+cargo test                   # тесты Rust ИЗ КОРНЯ репо (весь workspace); заодно экспорт ts-rs биндингов
+cargo clippy --all-targets -- -D warnings  # линт Rust (из корня)
 RESTYLE_DEMO=1 pnpm tauri dev  # показать оверлей через 1.5 с без хоткея
 ```
 
@@ -214,6 +215,27 @@ IBM Plex Sans 700 из `node_modules`): на тёмной панели зада�
 Логический размер 520×148 на старте (`window::PANEL_W/H` = tauri.conf.json), высоту
 присылает фронтенд по содержимому (`resize_overlay`).
 
+## restyle-core (общее ядро с островом)
+
+Репозиторий — cargo workspace `["src-tauri", "crates/restyle-core"]`; `[profile.*]`, `Cargo.lock` и `target/`
+в корне. **Ядро без Tauri**: в `crates/restyle-core` нельзя тянуть `tauri` и плагины — окна, трей,
+IPC-команды, мастер, обновления и хук клавиатуры остаются в приложении (`src-tauri`).
+
+- В ядре: `textfx`, `translate`, `ai/`, `history`, `secrets`, `screenshot`, `capture/`, `settings`
+  (тип + файл), `hotkey` (`combo`, `COMBO_*`, `HotkeyEvent`, `HotkeyCombo`; без хука), `window` (WinAPI
+  позиционирования и стили окна), `ipc` (данные событий), `session` (бывший `control.rs`).
+- `session` работает за двумя трейтами: `Host` (UI приложения: `emit`, `show_panel` / `move_panel` /
+  `hide_panel` для `Surface::{Panel, Menu}`, `panel_keys`, `menu_keys`, `settings`, `config_dir`, `spawn`,
+  `tick`) и `Platform` (система; `WinPlatform` — настоящая). У Restyle `Host` — `src-tauri/src/host.rs`
+  (`TauriHost`). Вход — `ControlMsg` в канал `session::spawn`.
+- Тесты сессии — `crates/restyle-core/tests/session.rs` на фейковых `Host` / `Platform` (без окон, буфера,
+  сети). Любая правка `session` — сначала тест там.
+- Ядро — edition 2024 (`gen` — `r#gen`), приложение — 2021. ts-rs в ядре пишет в `src/bindings/` через
+  `export_to = "../../../src/bindings/"` (в приложении — `"../../src/bindings/"`).
+- Ядро использует Droplet Island (`D:\Projects\d-island`) git-зависимостью с закреплённым `rev`: менять
+  публичный API ядра — только вместе с бампом `rev` у острова; ломающие правки формата `settings.json` /
+  `history.json` запрещены (оба приложения читают одни файлы).
+
 ## Контракт IPC
 
 Источник правды — `src-tauri/src/ipc.rs` и `settings.rs`
@@ -287,7 +309,10 @@ checkUpdates }`;
 иначе быстрый путь потерял бы эти миллисекунды. Дефолт: Ctrl+Alt+R / Ctrl+Alt+Z / «Ctrl, Ctrl»,
 `gemini-3.5-flash-lite`, 8 встроенных стилей (`builtin: true`; удалять можно, «Вернуть удалённые встроенные» —
 в разделе стилей).
-Хранение — `tauri-plugin-store` в каталоге конфига приложения.
+Хранение — `settings.json` в `%APPDATA%\dev.reva1v.restyle` (формат `tauri-plugin-store`: `{"settings": {...}}`),
+чтение и запись — `restyle_core::settings::Settings::{load, save}(dir)`, приложение берёт `dir` у Tauri
+(`app_data_dir`, `src-tauri/src/settings.rs`). Незнакомые поля — в `extra` (flatten) и пишутся обратно,
+чужие ключи верхнего уровня сохраняются: файл общий с островом.
 `Settings::normalize` вызывается и при чтении, и перед сохранением: id стиля
 берётся из имени (`slug`, кириллица даёт фолбэк `style`) и уникализируется
 суффиксом, `builtin` выставляется по совпадению id со встроенным, пустые/битые
