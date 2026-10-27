@@ -1,0 +1,8 @@
+[package]
+name = "restyle-core"
+version = "0.1.0"
+edition = "2024"
+description = "Restyle core: text capture, AI rewrite session, settings and history, without Tauri"
+publish = false
+
+[dependencies]

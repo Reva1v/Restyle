@@ -1,0 +1,18 @@
+[workspace]
+members = ["src-tauri", "crates/restyle-core"]
+resolver = "2"
+
+# Profiles live here: cargo ignores [profile.*] in workspace members.
+# Generic-код image (ресайз, JPEG) инстанцируется в нашем крейте, поэтому
+# override только для зависимостей не помогает: в -O0 кодирование ~380 мс
+# вместо ~30. opt-level=1 сохраняет отладку и убирает порядок.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
