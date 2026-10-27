@@ -180,7 +180,7 @@ fn update_status(state: State<update::UpdateState>) -> Option<update::UpdateInfo
 /// из поля ввода и в keyring не попадает — сохраняет его отдельная команда.
 #[tauri::command]
 async fn test_api_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
-    let settings = Settings::load(&app);
+    let settings = settings::load(&app);
     let req = ai::RewriteRequest {
         system_prompt: "You are a test probe. Answer with a single word.".into(),
         style_name: "Ping".into(),
@@ -290,9 +290,9 @@ fn resize_menu(app: tauri::AppHandle, height: f32) {
 /// Мастер пройден (или пропущен) — больше не показываем.
 #[tauri::command]
 async fn finish_onboarding(app: tauri::AppHandle, window: tauri::Window) {
-    let mut s = Settings::load(&app);
+    let mut s = settings::load(&app);
     s.onboarded = true;
-    s.store(&app);
+    settings::store(&app, &s);
     let _ = app.emit("settings-changed", &s);
     let _ = window.close();
 }
@@ -309,7 +309,7 @@ fn apply_autostart(app: &tauri::AppHandle, on: bool) {
 
 #[tauri::command]
 fn get_settings(app: tauri::AppHandle) -> Settings {
-    Settings::load(&app)
+    settings::load(&app)
 }
 
 /// Сохранение из окна настроек. Всё, что пришло с фронта, сначала
@@ -319,7 +319,7 @@ fn get_settings(app: tauri::AppHandle) -> Settings {
 #[tauri::command]
 fn save_settings(app: tauri::AppHandle, mut settings: Settings) -> Settings {
     settings.normalize();
-    settings.store(&app);
+    settings::store(&app, &settings);
     hotkey::set_combos(settings.combos());
     for (a, b) in settings.hotkey_conflicts() {
         eprintln!("[restyle] конфликт хоткеев: {a} и {b} — сработает только {a}");
@@ -359,7 +359,7 @@ async fn export_styles(app: tauri::AppHandle) -> Result<bool, String> {
         return Ok(false);
     };
     let path = path.into_path().map_err(|e| e.to_string())?;
-    let file = settings::StylesFile { restyle: settings::STYLES_FILE_VERSION, styles: Settings::load(&app).styles };
+    let file = settings::StylesFile { restyle: settings::STYLES_FILE_VERSION, styles: settings::load(&app).styles };
     let json = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("{}: {e}", path.display()))?;
     println!("[restyle] экспорт стилей: {} шт.", file.styles.len());
@@ -382,7 +382,7 @@ async fn import_styles(app: tauri::AppHandle) -> Result<Option<usize>, String> {
     if file.restyle > settings::STYLES_FILE_VERSION {
         return Err(format!("Файл стилей новее приложения (версия {})", file.restyle));
     }
-    let mut settings = Settings::load(&app);
+    let mut settings = settings::load(&app);
     let added = settings::merge_imported(&mut settings.styles, file.styles);
     println!("[restyle] импорт стилей: +{added}");
     if added > 0 {
@@ -543,10 +543,9 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let settings = Settings::load(app.handle());
+            let settings = settings::load(app.handle());
 
             // --- оверлей: создан конфигом один раз, живёт скрытым ---
             let overlay = app

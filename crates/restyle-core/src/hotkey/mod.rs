@@ -3,6 +3,8 @@
 
 pub mod combo;
 
+pub use crate::settings::HotkeyCombo;
+
 /// Идентификаторы комбинаций в `ComboSet`. Стили — `style:<id>`.
 pub const COMBO_MAIN: &str = "main";
 pub const COMBO_UNDO: &str = "undo";

@@ -351,7 +351,7 @@ impl Control {
     /// Кольцо-индикатор удержания у курсора. Клавиши при нём не глотаем:
     /// пользователь ещё может отпустить комбинацию и получить быстрый стиль.
     fn show_ring(&mut self) {
-        let settings = Settings::load(&self.app);
+        let settings = settings::load(&self.app);
         self.anchor = window::cursor_pos();
         self.panel_h = RING_H;
         let (x, y, w, _h, scale) = self.place_sized(self.anchor, RING_W, self.panel_h);
@@ -377,7 +377,7 @@ impl Control {
         if style_id.is_empty() || self.session.is_none() {
             return;
         }
-        let auto_paste = Settings::load(&self.app).auto_paste;
+        let auto_paste = settings::load(&self.app).auto_paste;
         let captured = {
             let Some(s) = self.session.as_mut() else { return };
             s.style_id = Some(style_id.clone());
@@ -584,7 +584,7 @@ impl Control {
             let _ = self.tx.send(ControlMsg::Generated { gen, req, result: Ok(sp.paste) });
             return;
         }
-        let settings = Settings::load(&self.app);
+        let settings = settings::load(&self.app);
         // Уточнение: вход — предыдущий результат; стиль либо зашитый
         // (`refine:shorter`), либо стиль перевода пользователя.
         let base_text = s.base_text.clone();
@@ -783,7 +783,7 @@ impl Control {
         let target_hwnd = s.target.hwnd;
         let target_exe = s.target.exe.clone();
         let text = apply_line_ending(result, captured.line_ending);
-        let settings = Settings::load(&self.app);
+        let settings = settings::load(&self.app);
         let select_only = captured.selection_only || s.paste_selection;
         let opts = PasteOptions {
             prefer_uia: captured.uia_writable && !select_only,
@@ -876,7 +876,7 @@ impl Control {
         let opts = PasteOptions {
             prefer_uia: e.via_uia,
             select_only: false,
-            restore_clipboard: Settings::load(&self.app).restore_clipboard,
+            restore_clipboard: settings::load(&self.app).restore_clipboard,
             caret: None,
         };
         self.undo_in_flight = true;
@@ -1016,7 +1016,7 @@ impl Control {
             self.hide();
             tokio::time::sleep(HIDE_SETTLE).await;
         }
-        let settings = Settings::load(&self.app);
+        let settings = settings::load(&self.app);
         let target = capture::process::foreground();
         let select_only = matches_process(&settings.select_only_processes, &target.exe);
         self.gen += 1;
@@ -1092,7 +1092,7 @@ impl Control {
         // Проглоченная клавиша + отпускание Alt = меню окна; маскируем сразу.
         capture::input::mask_menu_activation();
 
-        let settings = Settings::load(&self.app);
+        let settings = settings::load(&self.app);
         let target = capture::process::foreground();
         let select_only = matches_process(&settings.select_only_processes, &target.exe);
         println!(
@@ -1190,7 +1190,7 @@ impl Control {
         match msg {
             ControlMsg::Hotkey(HotkeyEvent::Combo { id, at }) => {
                 if id == COMBO_MAIN {
-                    let s = Settings::load(&self.app);
+                    let s = settings::load(&self.app);
                     let hold = s.long_press && !s.quick_style.is_empty();
                     self.start(at, None, hold).await;
                 } else if let Some(style) = id.strip_prefix(COMBO_STYLE_PREFIX) {
@@ -1213,7 +1213,7 @@ impl Control {
                 if hold.opened || hold.gen != self.gen {
                     return;
                 }
-                let style = Settings::load(&self.app).quick_style;
+                let style = settings::load(&self.app).quick_style;
                 println!(
                     "[restyle] короткое нажатие ({} мс) — стиль {style}",
                     hold.at.elapsed().as_millis()
@@ -1505,7 +1505,7 @@ pub fn spawn(
     capture: CaptureHandle,
 ) {
     tauri::async_runtime::spawn(async move {
-        let settings = Settings::load(&app);
+        let settings = settings::load(&app);
         let history_path = app.path().app_config_dir().ok().map(|d| d.join("history.json"));
         let mut ctl = Control {
             history: History::load(history_path, settings.history_to_disk, settings.history_limit as usize),

@@ -13,5 +13,6 @@ pub mod history;
 pub mod hotkey;
 pub mod screenshot;
 pub mod secrets;
+pub mod settings;
 pub mod textfx;
 pub mod translate;

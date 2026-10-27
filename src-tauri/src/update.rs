@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use ts_rs::TS;
 
-use crate::settings::Settings;
+use crate::settings;
 
 pub const RELEASES_API: &str = "https://api.github.com/repos/Reva1v/Restyle/releases/latest";
 pub const RELEASES_PAGE: &str = "https://github.com/Reva1v/Restyle/releases/latest";
@@ -108,7 +108,7 @@ pub fn spawn(app: AppHandle) {
         let mut last: Option<Instant> = None;
         loop {
             let due = last.is_none_or(|t| t.elapsed() >= INTERVAL);
-            if due && Settings::load(&app).check_updates {
+            if due && settings::load(&app).check_updates {
                 last = Some(Instant::now());
                 match check_once(&current_version()).await {
                     Ok(Some(info)) => {
