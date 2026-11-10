@@ -343,7 +343,7 @@ pub struct Settings {
     pub select_only_processes: Vec<String>,
     /// Писать историю переписываний на диск.
     pub history_to_disk: bool,
-    /// Сколько последних пар «исходник — результат» держать.
+    /// Сколько последних пар «исходник — результат» держать; 0 — не вести историю.
     pub history_limit: u32,
     /// "system" | "ru" | "uk" | "en" — язык интерфейса.
     pub language: String,
@@ -515,7 +515,8 @@ impl Settings {
         if !matches!(self.language.as_str(), "system" | "ru" | "uk" | "en") {
             self.language = "system".into();
         }
-        self.history_limit = self.history_limit.clamp(1, crate::history::HARD_MAX as u32);
+        // 0 — не вести историю вовсе.
+        self.history_limit = self.history_limit.min(crate::history::HARD_MAX as u32);
         if !matches!(self.translator.as_str(), "deepl" | "gemini") {
             self.translator = "deepl".into();
         }
@@ -728,7 +729,10 @@ mod tests {
         s.history_limit = 0;
         s.normalize();
         assert_eq!(s.language, "system");
-        assert_eq!(s.history_limit, 1, "меньше одной пары истории не бывает");
+        assert_eq!(s.history_limit, 0, "0 — не вести историю, это допустимое значение");
+        s.history_limit = 1;
+        s.normalize();
+        assert_eq!(s.history_limit, 1);
         s.language = "uk".into();
         s.history_limit = 10_000;
         s.normalize();

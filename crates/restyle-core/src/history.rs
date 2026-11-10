@@ -10,7 +10,7 @@ use ts_rs::TS;
 
 use crate::capture::text::LineEnding;
 
-/// Значение лимита по умолчанию (настройка `historyLimit`).
+/// Значение лимита по умолчанию (настройка `historyLimit`). 0 — не вести историю вовсе.
 pub const MAX: usize = 20;
 /// Потолок для настройки: больше держать в памяти незачем.
 pub const HARD_MAX: usize = 100;
@@ -107,11 +107,16 @@ pub struct History {
 }
 
 impl History {
-    /// `path` — файл истории; читается, только если `persist`.
+    /// `path` — файл истории; читается, только если `persist` и `limit > 0`.
+    /// Лимит 0 — историю не ведём: ничего не читается, файл с диска убирается.
     pub fn load(path: Option<PathBuf>, persist: bool, limit: usize) -> Self {
-        let limit = limit.clamp(1, HARD_MAX);
+        let limit = limit.min(HARD_MAX);
         let mut entries = VecDeque::new();
-        if persist {
+        if persist && limit == 0 {
+            if let Some(p) = &path {
+                let _ = std::fs::remove_file(p);
+            }
+        } else if persist {
             if let Some(p) = &path {
                 if let Ok(s) = std::fs::read_to_string(p) {
                     if let Ok(v) = serde_json::from_str::<Vec<HistoryEntry>>(&s) {
@@ -124,8 +129,9 @@ impl History {
     }
 
     /// Лимит из настроек; лишние записи отбрасываются сразу.
+    /// 0 — не вести историю: записи и файл на диске уходят сразу.
     pub fn set_limit(&mut self, limit: usize) {
-        self.limit = limit.clamp(1, HARD_MAX);
+        self.limit = limit.min(HARD_MAX);
         if self.trim() {
             self.save();
         }
@@ -149,6 +155,9 @@ impl History {
     }
 
     pub fn push(&mut self, e: HistoryEntry) {
+        if self.limit == 0 {
+            return;
+        }
         self.entries.push_back(e);
         self.trim();
         self.save();
@@ -198,6 +207,11 @@ impl History {
             return;
         }
         let Some(p) = &self.path else { return };
+        if self.limit == 0 {
+            // Не вести историю: файла быть не должно (и пустой `[]` тоже не пишем).
+            let _ = std::fs::remove_file(p);
+            return;
+        }
         let v: Vec<&HistoryEntry> = self.entries.iter().collect();
         let write = || -> std::io::Result<()> {
             if let Some(dir) = p.parent() {
@@ -280,6 +294,97 @@ mod tests {
         assert_eq!(h.len(), 0);
         assert!(!path.exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn temp_history_path(tag: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("restyle-hist-{tag}-{}", std::process::id()));
+        let path = dir.join("history.json");
+        (dir, path)
+    }
+
+    #[test]
+    fn limit_zero_keeps_nothing_in_memory() {
+        let mut h = History::load(None, false, 0);
+        h.push(entry(1));
+        h.push(entry(2));
+        assert_eq!(h.len(), 0);
+        assert!(h.is_empty());
+        assert!(h.items().is_empty());
+        assert!(h.nth_newest(0).is_none());
+        assert!(h.nth_newest_mut(0).is_none());
+    }
+
+    #[test]
+    fn limit_zero_writes_no_file() {
+        let (dir, path) = temp_history_path("zero-write");
+        let mut h = History::load(Some(path.clone()), true, 0);
+        h.push(entry(1));
+        h.save();
+        h.set_persist(true);
+        assert!(!path.exists(), "ни записи, ни пустого списка на диске");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn limit_zero_does_not_read_and_removes_the_old_file() {
+        let (dir, path) = temp_history_path("zero-read");
+        let mut h = History::load(Some(path.clone()), true, MAX);
+        h.push(entry(1));
+        assert!(path.exists());
+        let h0 = History::load(Some(path.clone()), true, 0);
+        assert_eq!(h0.len(), 0, "ничего не прочитано");
+        assert!(!path.exists(), "файл убран");
+        // Без `persist` файл не трогают: его там быть не должно, и это не наше дело.
+        h.save();
+        assert!(path.exists());
+        let h0 = History::load(Some(path.clone()), false, 0);
+        assert_eq!(h0.len(), 0);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saving_zero_clears_memory_and_deletes_the_file() {
+        let (dir, path) = temp_history_path("zero-set");
+        let mut h = History::load(Some(path.clone()), true, MAX);
+        h.push(entry(1));
+        h.push(entry(2));
+        assert!(path.exists());
+        h.set_limit(0);
+        assert_eq!(h.len(), 0);
+        assert!(!path.exists());
+        // Дальше ничего не копится, а вернув лимит, история снова идёт.
+        h.push(entry(3));
+        assert_eq!(h.len(), 0);
+        assert!(!path.exists());
+        h.set_limit(5);
+        h.push(entry(4));
+        assert_eq!(h.len(), 1);
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn limits_from_one_to_the_ceiling_work_as_before() {
+        for limit in [1, 2, 20, HARD_MAX] {
+            let mut h = History::load(None, false, limit);
+            for i in 0..(HARD_MAX as u64 + 10) {
+                h.push(entry(i));
+            }
+            assert_eq!(h.len(), limit, "limit {limit}");
+            assert_eq!(h.last_mut().unwrap().at, HARD_MAX as u64 + 9);
+        }
+        // Выше потолка — потолок.
+        let mut h = History::load(None, false, 10_000);
+        for i in 0..(HARD_MAX as u64 + 10) {
+            h.push(entry(i));
+        }
+        assert_eq!(h.len(), HARD_MAX);
+        // Лимит можно убавить до 1 и поднять обратно.
+        h.set_limit(1);
+        assert_eq!(h.len(), 1);
+        h.set_limit(0);
+        assert_eq!(h.len(), 0);
     }
 
     #[test]
