@@ -86,7 +86,10 @@ struct FakeSys {
     pastes: Mutex<Vec<(String, PasteOptions)>>,
     clipboard: Mutex<Vec<String>>,
     gemini_key: Option<String>,
+    deepl_key: Option<String>,
     rewrites: Arc<AtomicUsize>,
+    /// Что получила модель, по порядку запросов.
+    requests: Arc<Mutex<Vec<RewriteRequest>>>,
     masks: AtomicUsize,
 }
 
@@ -99,7 +102,9 @@ impl FakeSys {
             pastes: Mutex::default(),
             clipboard: Mutex::default(),
             gemini_key: Some("test-key".into()),
+            deepl_key: None,
             rewrites: Arc::default(),
+            requests: Arc::default(),
             masks: AtomicUsize::new(0),
         }
     }
@@ -121,7 +126,7 @@ fn captured(text: &str) -> Captured {
 }
 
 /// Модель: стримит текст двумя кусками и отвечает `<текст>!`.
-struct FakeProvider(Arc<AtomicUsize>);
+struct FakeProvider(Arc<AtomicUsize>, Arc<Mutex<Vec<RewriteRequest>>>);
 
 impl Provider for FakeProvider {
     fn name(&self) -> &'static str {
@@ -134,6 +139,7 @@ impl Provider for FakeProvider {
         chunks: UnboundedSender<String>,
     ) -> BoxFuture<'a, Result<String, AiError>> {
         self.0.fetch_add(1, Ordering::SeqCst);
+        self.1.lock().unwrap().push(req.clone());
         Box::pin(async move {
             let out = format!("{}!", req.text);
             let _ = chunks.send(out[..1].to_string());
@@ -190,13 +196,13 @@ impl Platform for FakeSys {
         Ok(self.gemini_key.clone())
     }
     fn deepl_key(&self) -> Result<Option<String>, String> {
-        Ok(None)
+        Ok(self.deepl_key.clone())
     }
     fn provider(&self, _model: &str) -> Box<dyn Provider> {
-        Box::new(FakeProvider(self.rewrites.clone()))
+        Box::new(FakeProvider(self.rewrites.clone(), self.requests.clone()))
     }
-    fn translate(&self, _key: String, text: String, _lang: String) -> BoxFuture<'static, Result<String, AiError>> {
-        Box::pin(async move { Ok(text) })
+    fn translate(&self, _key: String, text: String, lang: String) -> BoxFuture<'static, Result<String, AiError>> {
+        Box::pin(async move { Ok(format!("[{lang}]{text}")) })
     }
 }
 
@@ -532,4 +538,125 @@ async fn layout_hotkey_fixes_and_pastes_without_the_panel() {
     wait(|| r.sys.pastes().len() == 1, "paste").await;
     assert_eq!(r.sys.pastes()[0].0, "привет");
     assert_eq!(r.count("overlay:text"), 0);
+}
+
+// --- перевод ------------------------------------------------------------------
+
+/// Перевод на русский со стилем-причёской «formal» поверх.
+fn translate_settings(translator: &str) -> Settings {
+    let mut s = base_settings();
+    s.translator = translator.into();
+    s.styles.push(Style {
+        id: "polish".into(),
+        name: "Polish".into(),
+        instruction: "be formal".into(),
+        screenshot: false,
+        kind: StyleKind::Prompt,
+        ..Style::default()
+    });
+    for (id, post) in [("to-ru-formal", "polish"), ("to-ru-plain", "")] {
+        s.styles.push(Style {
+            id: id.into(),
+            name: "To Russian".into(),
+            instruction: "translate into Russian".into(),
+            screenshot: false,
+            kind: StyleKind::Translate,
+            target_lang: "RU".into(),
+            post_style: post.into(),
+            ..Style::default()
+        });
+    }
+    s
+}
+
+fn requests_of(r: &Rig) -> Vec<(String, String, String)> {
+    r.sys
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|q| (q.style_instruction.clone(), q.text.clone(), q.style_name.clone()))
+        .collect()
+}
+
+#[tokio::test]
+async fn model_translates_with_the_style_instruction_before_the_post_style() {
+    // Ключа DeepL нет: переводит модель, и только потом модель же причёсывает перевод.
+    let r = rig_with(translate_settings("deepl"), FakeSys::new("hi"));
+    r.open().await;
+    r.pick("to-ru-formal").await;
+    let q = requests_of(&r);
+    assert_eq!(q.len(), 2, "перевод и причёска — два запроса: {q:?}");
+    assert_eq!(q[0].0, "translate into Russian", "сначала инструкция самого стиля перевода");
+    assert_eq!(q[0].1, "hi", "перевод получает исходный текст");
+    assert_eq!(q[1].0, "be formal", "потом инструкция причёски");
+    assert_eq!(q[1].1, "hi!", "причёска получает перевод");
+    assert_eq!(r.host.events("rewrite:done")[0]["text"], "hi!!");
+    // Пользователь видит только куски второго прохода.
+    let chunks: String =
+        r.host.events("rewrite:chunk").iter().map(|c| c["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(chunks, "hi!!");
+}
+
+#[tokio::test]
+async fn gemini_translator_ignores_deepl_and_keeps_the_translate_instruction() {
+    let mut sys = FakeSys::new("hi");
+    sys.deepl_key = Some("deepl-key".into());
+    let r = rig_with(translate_settings("gemini"), sys);
+    r.open().await;
+    r.pick("to-ru-formal").await;
+    let q = requests_of(&r);
+    assert_eq!(q.len(), 2, "{q:?}");
+    assert_eq!(q[0].0, "translate into Russian");
+    assert_eq!(q[0].1, "hi", "DeepL не вызывался");
+    assert_eq!(q[1].0, "be formal");
+}
+
+#[tokio::test]
+async fn model_translation_without_post_style_is_one_request() {
+    let r = rig_with(translate_settings("deepl"), FakeSys::new("hi"));
+    r.open().await;
+    r.pick("to-ru-plain").await;
+    let q = requests_of(&r);
+    assert_eq!(q.len(), 1, "{q:?}");
+    assert_eq!(q[0].0, "translate into Russian");
+    assert_eq!(r.host.events("rewrite:done")[0]["text"], "hi!");
+}
+
+#[tokio::test]
+async fn deepl_translation_then_post_style_goes_to_the_model_once() {
+    let mut sys = FakeSys::new("hi");
+    sys.deepl_key = Some("deepl-key".into());
+    let r = rig_with(translate_settings("deepl"), sys);
+    r.open().await;
+    r.pick("to-ru-formal").await;
+    let q = requests_of(&r);
+    assert_eq!(q.len(), 1, "{q:?}");
+    assert_eq!(q[0].0, "be formal");
+    assert_eq!(q[0].1, "[RU]hi", "причёска получает перевод DeepL");
+    assert_eq!(r.host.events("rewrite:done")[0]["text"], "[RU]hi!");
+}
+
+#[tokio::test]
+async fn deepl_translation_without_post_style_skips_the_model() {
+    let mut sys = FakeSys::new("hi");
+    sys.deepl_key = Some("deepl-key".into());
+    let r = rig_with(translate_settings("deepl"), sys);
+    r.open().await;
+    r.pick("to-ru-plain").await;
+    assert_eq!(r.sys.rewrites.load(Ordering::SeqCst), 0);
+    assert_eq!(r.host.events("rewrite:done")[0]["text"], "[RU]hi");
+}
+
+#[tokio::test]
+async fn model_translation_without_an_own_instruction_gets_a_default_one() {
+    let mut settings = translate_settings("gemini");
+    settings.styles.iter_mut().find(|s| s.id == "to-ru-formal").unwrap().instruction = String::new();
+    let r = rig_with(settings, FakeSys::new("hi"));
+    r.open().await;
+    r.pick("to-ru-formal").await;
+    let q = requests_of(&r);
+    assert_eq!(q.len(), 2, "{q:?}");
+    assert!(q[0].0.starts_with("Translate into natural, fluent"), "{}", q[0].0);
+    assert_eq!(q[1].0, "be formal");
 }

@@ -765,10 +765,13 @@ impl Control {
             StyleKind::Translate if settings.translator == "deepl" => Some(style.target_lang.clone()),
             _ => None,
         };
+        // Стиль-причёска есть только у перевода.
         let post = settings
             .styles
             .iter()
-            .find(|st| !style.post_style.is_empty() && st.id == style.post_style)
+            .find(|st| {
+                style.kind == StyleKind::Translate && !style.post_style.is_empty() && st.id == style.post_style
+            })
             .map(|st| (st.name.clone(), st.instruction.clone()));
 
         let mut req = RewriteRequest {
@@ -779,10 +782,11 @@ impl Control {
             screenshot_jpeg_base64: screenshot,
             model: settings.model.clone(),
         };
-        if let Some((name, instruction)) = post.clone() {
-            // После перевода модель работает инструкцией стиля-причёски.
-            req.style_name = name;
-            req.style_instruction = instruction;
+        // Перевод без DeepL (нет ключа, выбран Gemini): сначала модель переводит инструкцией самого
+        // стиля, и только потом по её результату работает стиль-причёска. Подмена инструкции до
+        // перевода отдавала текст непереведённым.
+        if post.is_some() && style.instruction.trim().is_empty() {
+            req.style_instruction = translate_instruction(&style.target_lang);
         }
 
         self.abort_generation();
@@ -810,6 +814,8 @@ impl Control {
 
             // --- перевод (DeepL) --------------------------------------------
             let mut req = req;
+            // Перевёл ли DeepL: тогда причёска идёт сразу, иначе перевод делает модель.
+            let mut deepl_translated = false;
             if let Some(lang) = translate_to {
                 let key = {
                     let sys = sys.clone();
@@ -843,6 +849,7 @@ impl Control {
                                 return;
                             }
                             req.text = translated;
+                            deepl_translated = true;
                         }
                         Err(e) => {
                             eprintln!("[restyle] DeepL: {e:?}");
@@ -879,6 +886,24 @@ impl Control {
                 }
             };
             let provider = sys.provider(&req.model);
+            if let Some((name, instruction)) = post {
+                if !deepl_translated {
+                    // Первый проход — перевод моделью; куски пользователю не показываем.
+                    let (null_tx, _null_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                    match provider.rewrite(&key, &req, null_tx).await {
+                        Ok(translated) => req.text = translated,
+                        Err(e) => {
+                            eprintln!("[restyle] translation by the model: {e:?}");
+                            emit(&*app, "rewrite:error", RewriteError { r#gen, req: req_id, message: e.user_message() });
+                            let _ = tx.send(ControlMsg::Generated { r#gen, req: req_id, result: Err(e) });
+                            return;
+                        }
+                    }
+                }
+                // Перевод готов: модель причёсывает его инструкцией стиля-причёски.
+                req.style_name = name;
+                req.style_instruction = instruction;
+            }
             let (ctx, mut crx) = tokio::sync::mpsc::unbounded_channel::<String>();
             let app2 = app.clone();
             let first_chunk = std::sync::Arc::new(std::sync::Mutex::new(None::<f32>));
@@ -1702,4 +1727,10 @@ pub fn spawn(
             }
         }
     }));
+}
+
+/// Инструкция перевода моделью для стиля перевода без своей инструкции.
+fn translate_instruction(code: &str) -> String {
+    let name = settings::TRANSLATE_LANGS.iter().find(|(c, _)| *c == code).map_or(code, |(_, n)| *n);
+    format!("Translate into natural, fluent {name}. Keep tone, formatting, names and numbers.")
 }
