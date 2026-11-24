@@ -5,7 +5,7 @@ $Cases = @($Cases | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim(
 $ErrorActionPreference = "Continue"
 Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing, UIAutomationClient, UIAutomationTypes
-$exe = "C:\Users\Reva1v\WebstormProjects\Restyle\src-tauri\target\debug\restyle.exe"
+$exe = "D:\Projects\Restyle\src-tauri\target\debug\restyle.exe"
 $ORIGINAL = "Привет, это тестовый текст для Restyle.`r`nВторая строка с числами 42 и ссылкой https://example.com"
 
 function Get-NotepadWindow {

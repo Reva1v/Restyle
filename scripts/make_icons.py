@@ -13,7 +13,7 @@
 import os, sys
 from PIL import Image, ImageDraw, ImageFont
 
-ROOT = r"C:\Users\Reva1v\WebstormProjects\Restyle"
+ROOT = r"D:\Projects\Restyle"
 ICONS = os.path.join(ROOT, "src-tauri", "icons")
 TMP = os.path.join(os.environ["TEMP"], "restyle_icons")
 os.makedirs(TMP, exist_ok=True)
