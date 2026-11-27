@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use ts_rs::TS;
 
+use crate::ai::gemini::{valid_location, VertexTarget};
 use crate::hotkey::combo::VK_DOUBLE_TAP;
 use crate::hotkey::{COMBO_LAYOUT, COMBO_MAIN, COMBO_STYLE_PREFIX, COMBO_UNDO};
 
@@ -363,6 +364,10 @@ pub struct Settings {
     pub onboarded: bool,
     /// Раз в сутки спрашивать GitHub Releases о новой версии (см. `update.rs`).
     pub check_updates: bool,
+    /// Проект GCP для ключей Vertex AI (`AQ.…`); пусто — проекта нет.
+    pub vertex_project: String,
+    /// Регион Vertex: `global`, `europe-west1`…
+    pub vertex_location: String,
     /// Поля, которых эта версия не знает (их записала другая версия Restyle
     /// или остров): читаются и пишутся обратно как есть.
     #[serde(flatten)]
@@ -415,6 +420,8 @@ impl Default for Settings {
             restore_clipboard: true,
             onboarded: false,
             check_updates: true,
+            vertex_project: String::new(),
+            vertex_location: "global".into(),
             extra: Map::new(),
         }
     }
@@ -446,6 +453,11 @@ impl Settings {
         let tmp = dir.join(format!("{STORE_FILE}.tmp"));
         std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    }
+
+    /// Куда слать запросы с ключом Vertex: `Some` только при допустимом проекте.
+    pub fn vertex_target(&self) -> Option<VertexTarget> {
+        VertexTarget::new(&self.vertex_project, &self.vertex_location)
     }
 
     /// Все комбинации для hotkey-потока: (id, VK). Пустые и без модификатора
@@ -499,6 +511,12 @@ impl Settings {
     /// обрезка пробелов, допустимые значения перечислений, хоткеи без
     /// модификатора. Вызывается перед сохранением — фронт не может испортить store.
     pub fn normalize(&mut self) {
+        // Неверный проект не стираем (его могли вписать руками), `vertex_target()` его просто не примет.
+        self.vertex_project = self.vertex_project.trim().to_string();
+        self.vertex_location = self.vertex_location.trim().to_string();
+        if !valid_location(&self.vertex_location) {
+            self.vertex_location = "global".into();
+        }
         self.model = self.model.trim().to_string();
         if self.model.is_empty() {
             self.model = MODEL_LITE.into();
@@ -985,5 +1003,102 @@ mod tests {
         s.save(&d).unwrap();
         assert_eq!(Settings::load(&d), s);
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    #[test]
+    fn vertex_defaults() {
+        let s = Settings::default();
+        assert_eq!(s.vertex_project, "");
+        assert_eq!(s.vertex_location, "global");
+        assert_eq!(s.vertex_target(), None);
+    }
+
+    #[test]
+    fn old_file_without_vertex_fields_loads_with_defaults() {
+        let d = temp_dir("vertex-old");
+        std::fs::write(
+            d.join(STORE_FILE),
+            r#"{"settings": {"theme": "dark", "model": "gemini-3.6-flash", "futureFlag": 7}}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&d);
+        assert_eq!(s.vertex_project, "");
+        assert_eq!(s.vertex_location, "global");
+        assert_eq!(s.theme, "dark");
+        assert_eq!(s.model, "gemini-3.6-flash");
+        assert_eq!(s.extra.get("futureFlag"), Some(&serde_json::json!(7)));
+        assert!(!s.extra.contains_key("vertexProject"), "known fields never land in extra");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn vertex_fields_use_camel_case_and_round_trip() {
+        let d = temp_dir("vertex-rt");
+        let mut s = Settings::default();
+        s.vertex_project = "my-proj-1".into();
+        s.vertex_location = "europe-west1".into();
+        s.save(&d).unwrap();
+        let root: Value = serde_json::from_slice(&std::fs::read(d.join(STORE_FILE)).unwrap()).unwrap();
+        assert_eq!(root["settings"]["vertexProject"], "my-proj-1");
+        assert_eq!(root["settings"]["vertexLocation"], "europe-west1");
+        assert_eq!(Settings::load(&d), s);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn normalize_vertex_location() {
+        for (input, want) in [
+            ("", "global"),
+            ("  ", "global"),
+            ("EU WEST", "global"),
+            ("europe_west1", "global"),
+            ("a/b", "global"),
+            ("europe-west1", "europe-west1"),
+            ("  us-central1 ", "us-central1"),
+            ("global", "global"),
+        ] {
+            let mut s = Settings::default();
+            s.vertex_location = input.into();
+            s.normalize();
+            assert_eq!(s.vertex_location, want, "{input:?}");
+        }
+        let mut s = Settings::default();
+        s.vertex_location = "a".repeat(40);
+        s.normalize();
+        assert_eq!(s.vertex_location, "a".repeat(40), "40 символов допустимо");
+        s.vertex_location = "a".repeat(41);
+        s.normalize();
+        assert_eq!(s.vertex_location, "global", "41 символ — нет");
+    }
+
+    #[test]
+    fn normalize_trims_project_but_keeps_a_bad_one() {
+        let mut s = Settings::default();
+        s.vertex_project = "  my-proj-1  ".into();
+        s.normalize();
+        assert_eq!(s.vertex_project, "my-proj-1");
+        s.vertex_project = "Bad_Project".into();
+        s.normalize();
+        assert_eq!(s.vertex_project, "Bad_Project", "руками вписанное не стираем");
+        assert_eq!(s.vertex_target(), None, "но целью оно не становится");
+    }
+
+    #[test]
+    fn vertex_target_from_settings() {
+        let mut s = Settings::default();
+        for bad in ["", "Bad_Project", "abcde", "1abcdef"] {
+            s.vertex_project = bad.into();
+            assert_eq!(s.vertex_target(), None, "{bad:?}");
+        }
+        for good in ["my-proj-1", "  my-proj-1  "] {
+            s.vertex_project = good.into();
+            assert_eq!(
+                s.vertex_target(),
+                Some(VertexTarget { project: "my-proj-1".into(), location: "global".into() }),
+                "{good:?}"
+            );
+        }
+        s.vertex_location = "europe-west1".into();
+        assert_eq!(s.vertex_target().unwrap().location, "europe-west1");
     }
 }

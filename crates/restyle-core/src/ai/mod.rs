@@ -72,6 +72,10 @@ pub enum AiError {
     /// Ответ заблокирован фильтрами (причина от провайдера).
     Blocked(String),
     Server(u16, String),
+    /// Ключ Vertex (`AQ.…`), а проекта GCP в настройках нет — запрос не отправлялся.
+    NoProject,
+    /// Vertex ответил 403: у ключа нет роли `aiplatform.user` или он ограничен другим API.
+    NoRole,
     Other(String),
 }
 
@@ -86,7 +90,18 @@ impl AiError {
             AiError::Timeout => "Сервис не ответил за 20 с".into(),
             AiError::Blocked(r) => format!("Ответ заблокирован фильтром ({r})"),
             AiError::Server(code, _) => format!("Сервис недоступен ({code})"),
+            // Начала этих двух текстов узнаёт панель острова (`CORE_TEXTS`): не менять.
+            AiError::NoProject => "Укажите проект GCP для ключа Vertex — открой настройки".into(),
+            AiError::NoRole => "Нет доступа к Vertex AI: нужна роль aiplatform.user".into(),
             AiError::Other(m) => format!("Ошибка: {m}"),
+        }
+    }
+
+    /// То же, что `from_status`, для ответов Vertex: 403 — нет роли (`NoRole`), а не «Проверь ключ».
+    pub fn from_status_vertex(code: u16, body: &str) -> Self {
+        match code {
+            403 => AiError::NoRole,
+            _ => Self::from_status(code, body),
         }
     }
 
@@ -171,8 +186,13 @@ pub trait Provider: Send + Sync {
 }
 
 /// Провайдер по имени модели (пока всегда Gemini).
-pub fn provider_for(_model: &str) -> Box<dyn Provider> {
-    Box::new(gemini::Gemini::new())
+pub fn provider_for(model: &str) -> Box<dyn Provider> {
+    provider_with(model, None)
+}
+
+/// Провайдер с проектом Vertex для ключей `AQ.…` (ключу AI Studio цель не нужна).
+pub fn provider_with(_model: &str, vertex: Option<gemini::VertexTarget>) -> Box<dyn Provider> {
+    Box::new(gemini::Gemini::new().with_vertex(vertex))
 }
 
 #[cfg(test)]
@@ -187,6 +207,31 @@ mod tests {
         assert_eq!(AiError::from_status(429, ""), AiError::RateLimit);
         assert!(matches!(AiError::from_status(503, "x"), AiError::Server(503, _)));
         assert!(matches!(AiError::from_status(418, "x"), AiError::Other(_)));
+    }
+
+    #[test]
+    fn vertex_status_mapping() {
+        let invalid = r#"{"error":{"code":401,"message":"API key not valid. Please pass a valid API key.","status":"UNAUTHENTICATED"}}"#;
+        let unsupported = r#"{"error":{"code":401,"message":"API keys are not supported by this API.","status":"UNAUTHENTICATED"}}"#;
+        let denied = r#"{"error":{"code":403,"message":"Permission denied","status":"PERMISSION_DENIED"}}"#;
+        let missing = r#"{"error":{"code":404,"message":"Publisher model `projects/p/locations/global/publishers/google/models/gemini-3.6-flash` was not found","status":"NOT_FOUND"}}"#;
+        assert_eq!(AiError::from_status_vertex(401, invalid), AiError::Auth);
+        assert_eq!(AiError::from_status_vertex(401, unsupported), AiError::Auth);
+        assert_eq!(AiError::from_status_vertex(403, denied), AiError::NoRole);
+        assert_eq!(AiError::from_status_vertex(403, ""), AiError::NoRole);
+        assert!(matches!(AiError::from_status_vertex(404, missing), AiError::Other(_)));
+        assert_eq!(AiError::from_status_vertex(429, ""), AiError::RateLimit);
+        assert!(matches!(AiError::from_status_vertex(503, "x"), AiError::Server(503, _)));
+        assert_eq!(AiError::from_status_vertex(400, "API key not valid"), AiError::Auth);
+        // AI Studio: 403 остаётся «проверь ключ».
+        assert_eq!(AiError::from_status(403, denied), AiError::Auth);
+    }
+
+    #[test]
+    fn vertex_error_texts_keep_the_prefixes_the_island_matches() {
+        assert!(AiError::NoProject.user_message().starts_with("Укажите проект GCP"));
+        assert!(AiError::NoRole.user_message().starts_with("Нет доступа к Vertex AI"));
+        assert_ne!(AiError::NoProject.user_message(), AiError::NoRole.user_message());
     }
 
     #[test]

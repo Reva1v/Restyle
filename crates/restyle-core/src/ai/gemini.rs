@@ -32,9 +32,127 @@ fn is_text_model(id: &str) -> bool {
     !SKIP.iter().any(|bad| id.contains(bad))
 }
 
+/// Адрес Vertex AI: `…/projects/{project}/locations/{location}/publishers/google/models/…`
+/// (express-адрес без проекта Google ведёт в europe-west1, где части моделей нет).
+pub const VERTEX_BASE_URL: &str = "https://aiplatform.googleapis.com/v1beta1";
+
+/// Текстовые модели Vertex (проверено вживую 2026-11-26): `gemini-3.6-flash` и все 2.x там 404.
+pub const VERTEX_MODELS: &[&str] = &[
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-4-argon",
+];
+
+/// Модель, которой заменяется недоступная на Vertex (и по которой проверяется ключ).
+pub const VERTEX_DEFAULT_MODEL: &str = "gemini-3.5-flash-lite";
+
+/// Вид ключа Gemini: ключ Google AI Studio или ключ Vertex AI (`AQ.…`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    AiStudio,
+    Vertex,
+}
+
+impl KeyKind {
+    /// По самому ключу: после `trim()` пусто — `None`; `AQ.` (регистр важен: у
+    /// настоящих ключей `aq.` не бывает, а ложное срабатывание спрятало бы
+    /// ошибку ключа за «нет проекта») — Vertex; остальное — AI Studio.
+    pub fn of(key: &str) -> Option<KeyKind> {
+        let key = key.trim();
+        if key.is_empty() {
+            None
+        } else if key.starts_with("AQ.") {
+            Some(KeyKind::Vertex)
+        } else {
+            Some(KeyKind::AiStudio)
+        }
+    }
+}
+
+/// Допустим ли id проекта GCP: `^[a-z][a-z0-9-]{4,61}[a-z0-9]$` после `trim()`.
+pub fn valid_project(s: &str) -> bool {
+    let b = s.trim().as_bytes();
+    (6..=63).contains(&b.len())
+        && b[0].is_ascii_lowercase()
+        && b[b.len() - 1] != b'-'
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+}
+
+/// Допустим ли регион: `^[a-z0-9-]{1,40}$` (без пробелов по краям).
+pub(crate) fn valid_location(s: &str) -> bool {
+    (1..=40).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
+/// Куда слать запросы Vertex: проект GCP и регион (`global`, `europe-west1`…).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VertexTarget {
+    pub project: String,
+    pub location: String,
+}
+
+impl VertexTarget {
+    /// `None`, если проект не по правилу `valid_project`. Регион обрезается;
+    /// пустой или недопустимый — `global` (как в `Settings::normalize`).
+    pub fn new(project: &str, location: &str) -> Option<Self> {
+        if !valid_project(project) {
+            return None;
+        }
+        let location = location.trim();
+        let location = if valid_location(location) { location } else { "global" };
+        Some(Self { project: project.trim().to_string(), location: location.to_string() })
+    }
+}
+
+/// Модель, которая ответит на Vertex: из `VERTEX_MODELS` — она сама (после
+/// `trim()` и без префикса `models/`), иначе `VERTEX_DEFAULT_MODEL`.
+pub fn vertex_model(model: &str) -> &str {
+    let model = model.trim();
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    VERTEX_MODELS.iter().copied().find(|m| *m == model).unwrap_or(VERTEX_DEFAULT_MODEL)
+}
+
+/// Каталог Vertex: фиксированный список (`models.list` по ключу там не работает).
+/// Порядок как у `Gemini::list_models`: быстрые сверху, затем по id.
+pub fn vertex_models() -> Vec<ModelInfo> {
+    let mut out: Vec<ModelInfo> = VERTEX_MODELS
+        .iter()
+        .map(|id| ModelInfo {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            fast: id.contains("flash") || id.contains("lite"),
+        })
+        .collect();
+    out.sort_by(|a, b| b.fast.cmp(&a.fast).then_with(|| a.id.cmp(&b.id)));
+    out
+}
+
+/// Адрес метода модели на Vertex. Для `streamGenerateContent` — `?alt=sse`.
+/// Ключ в адрес не попадает (он в заголовке).
+pub fn vertex_url(base: &str, target: &VertexTarget, model: &str, method: &str) -> String {
+    let model = model.trim();
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    let mut url = format!(
+        "{}/projects/{}/locations/{}/publishers/google/models/{}:{}",
+        base.trim_end_matches('/'),
+        target.project,
+        target.location,
+        model,
+        method
+    );
+    if method == "streamGenerateContent" {
+        url.push_str("?alt=sse");
+    }
+    url
+}
+
 pub struct Gemini {
     client: reqwest::Client,
     base_url: String,
+    vertex_base_url: String,
+    vertex: Option<VertexTarget>,
 }
 
 impl Default for Gemini {
@@ -45,19 +163,73 @@ impl Default for Gemini {
 
 impl Gemini {
     pub fn new() -> Self {
+        let base_url = super::base_url_override("RESTYLE_GEMINI_BASE_URL")
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let vertex_base_url = super::base_url_override("RESTYLE_VERTEX_BASE_URL")
+            .unwrap_or_else(|| VERTEX_BASE_URL.to_string());
+        Self::with_bases(&base_url, &vertex_base_url)
+    }
+
+    /// Свои адреса без чтения окружения — для тестов (мок на loopback).
+    #[doc(hidden)]
+    pub fn with_bases(ai_studio_base: &str, vertex_base: &str) -> Self {
         let client = reqwest::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .expect("reqwest client");
-        let base_url = super::base_url_override("RESTYLE_GEMINI_BASE_URL")
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        Self { client, base_url: base_url.trim_end_matches('/').to_string() }
+        Self {
+            client,
+            base_url: ai_studio_base.trim_end_matches('/').to_string(),
+            vertex_base_url: vertex_base.trim_end_matches('/').to_string(),
+            vertex: None,
+        }
+    }
+
+    /// Проект и регион для ключа Vertex. Без цели такой ключ даёт
+    /// `AiError::NoProject` до всякого запроса. Ключу AI Studio цель не нужна.
+    pub fn with_vertex(mut self, vertex: Option<VertexTarget>) -> Self {
+        self.vertex = vertex;
+        self
+    }
+
+    /// Проверка ключа. AI Studio — `list_models`, как раньше. Vertex: нет
+    /// проекта — `NoProject` без сети; иначе `countTokens` от «ping» на
+    /// `VERTEX_DEFAULT_MODEL` (квоту генерации не тратит; `models.list` по
+    /// ключу Vertex не работает).
+    pub async fn check_key(&self, key: &str) -> Result<(), AiError> {
+        match KeyKind::of(key) {
+            None => Err(AiError::NoApiKey),
+            Some(KeyKind::AiStudio) => self.list_models(key).await.map(|_| ()),
+            Some(KeyKind::Vertex) => {
+                let target = self.vertex.as_ref().ok_or(AiError::NoProject)?;
+                let url = vertex_url(&self.vertex_base_url, target, VERTEX_DEFAULT_MODEL, "countTokens");
+                let resp = self
+                    .client
+                    .post(url)
+                    .header("x-goog-api-key", key.trim())
+                    .json(&json!({ "contents": [{ "role": "user", "parts": [{ "text": "ping" }] }] }))
+                    .send()
+                    .await
+                    .map_err(|e| AiError::from_reqwest(&e))?;
+                let status = resp.status().as_u16();
+                let body = resp.text().await.map_err(|e| AiError::from_reqwest(&e))?;
+                if status == 200 {
+                    Ok(())
+                } else {
+                    Err(AiError::from_status_vertex(status, &body))
+                }
+            }
+        }
     }
 
     /// Каталог моделей ключа: `GET /models`. Ключи видят разный набор (2.5
     /// новым ключам недоступна), поэтому список тянем у API, а не хардкодим.
+    /// Ключ Vertex — фиксированный `vertex_models()` без сети.
     pub async fn list_models(&self, key: &str) -> Result<Vec<ModelInfo>, AiError> {
+        if KeyKind::of(key) == Some(KeyKind::Vertex) {
+            return Ok(vertex_models());
+        }
         // Ключ — заголовком, не в URL: текст ошибки reqwest содержит URL целиком
         // и уходил бы в интерфейс и логи.
         let url = format!("{}/models?pageSize=200", self.base_url);
@@ -204,7 +376,24 @@ impl Provider for Gemini {
         chunks: UnboundedSender<String>,
     ) -> BoxFuture<'a, Result<String, AiError>> {
         Box::pin(async move {
-            let url = format!("{}/models/{}:streamGenerateContent?alt=sse", self.base_url, req.model);
+            let vertex = KeyKind::of(api_key) == Some(KeyKind::Vertex);
+            // Ключ Vertex: нет проекта — ошибка до сети; модель, которой на Vertex нет,
+            // заменяется (настройки не меняются), тело и thinkingConfig считаются по ней.
+            let substituted;
+            let (url, req, api_key) = if vertex {
+                let target = self.vertex.as_ref().ok_or(AiError::NoProject)?;
+                let model = vertex_model(&req.model);
+                let req = if req.model == model {
+                    req
+                } else {
+                    eprintln!("[restyle] vertex: {} → {model}", req.model.trim());
+                    substituted = RewriteRequest { model: model.to_string(), ..req.clone() };
+                    &substituted
+                };
+                (vertex_url(&self.vertex_base_url, target, model, "streamGenerateContent"), req, api_key.trim())
+            } else {
+                (format!("{}/models/{}:streamGenerateContent?alt=sse", self.base_url, req.model), req, api_key)
+            };
             let mut with_thinking = Self::thinking_config(&req.model).is_some();
             let resp = loop {
                 let resp = self
@@ -226,7 +415,11 @@ impl Provider for Gemini {
                     with_thinking = false;
                     continue;
                 }
-                return Err(AiError::from_status(status, &body));
+                return Err(if vertex {
+                    AiError::from_status_vertex(status, &body)
+                } else {
+                    AiError::from_status(status, &body)
+                });
             };
 
             let mut stream = resp.bytes_stream();
@@ -356,5 +549,126 @@ mod catalog_tests {
         ] {
             assert!(!is_text_model(bad), "{bad} не должна попасть в список");
         }
+    }
+}
+
+#[cfg(test)]
+mod vertex_tests {
+    use super::*;
+
+    #[test]
+    fn key_kind_table() {
+        for none in ["", "   ", "\n", " \t\r\n "] {
+            assert_eq!(KeyKind::of(none), None, "{none:?}");
+        }
+        for vertex in ["AQ.x", "  AQ.x\n", "AQ.", "AQ.Ab12-_cd", "\tAQ.x"] {
+            assert_eq!(KeyKind::of(vertex), Some(KeyKind::Vertex), "{vertex:?}");
+        }
+        for studio in [
+            "aq.x", "Aq.x", "aQ.x", "AQ,x", "AQx", "AQ", "A", "AIzaSyDummy", "xAQ.y",
+            "AIzaSy-AQ.tail", "bad-key", "AQ .x",
+        ] {
+            assert_eq!(KeyKind::of(studio), Some(KeyKind::AiStudio), "{studio:?}");
+        }
+    }
+
+    #[test]
+    fn valid_project_boundaries() {
+        let of = |n: usize| format!("a{}", "b".repeat(n - 1));
+        assert!(!valid_project(&of(5)), "5 символов");
+        assert!(valid_project(&of(6)), "6 символов");
+        assert!(valid_project(&of(63)), "63 символа");
+        assert!(!valid_project(&of(64)), "64 символа");
+        assert!(valid_project("my-proj-1"));
+        assert!(valid_project("abcde1"));
+        assert!(valid_project("  my-proj-1  "), "пробелы по краям обрезаются");
+        assert!(valid_project("a----b"), "дефисы внутри допустимы");
+        assert!(!valid_project("a-----"), "а в конце — нет");
+        assert!(!valid_project(""));
+        assert!(!valid_project("      "));
+        assert!(!valid_project("1abcdef"), "цифра в начале");
+        assert!(!valid_project("-abcdef"), "дефис в начале");
+        assert!(!valid_project("abcdef-"), "дефис в конце");
+        assert!(valid_project("abcdef1"), "цифра в конце");
+        assert!(!valid_project("Abcdef"), "заглавная в начале");
+        assert!(!valid_project("abcDef"), "заглавная внутри");
+        assert!(!valid_project("abc_def"), "_");
+        assert!(!valid_project("abc def"), "пробел внутри");
+        assert!(!valid_project("abc.def"), ".");
+        assert!(!valid_project("abc/def"), "/");
+        assert!(!valid_project("проект-1"), "не ASCII");
+        assert!(!valid_project(&format!("a{}", "я".repeat(5))), "6 байт, но не ASCII");
+    }
+
+    #[test]
+    fn target_new_validates_project_and_defaults_location() {
+        let t = VertexTarget::new("  my-proj-1 ", "").unwrap();
+        assert_eq!(t, VertexTarget { project: "my-proj-1".into(), location: "global".into() });
+        assert_eq!(VertexTarget::new("my-proj-1", "  ").unwrap().location, "global");
+        assert_eq!(VertexTarget::new("my-proj-1", " europe-west1 ").unwrap().location, "europe-west1");
+        assert_eq!(VertexTarget::new("my-proj-1", "EU WEST").unwrap().location, "global", "мусор в регионе");
+        assert_eq!(VertexTarget::new("my-proj-1", "a/b").unwrap().location, "global", "слэш не уходит в адрес");
+        assert_eq!(VertexTarget::new("Bad_Project", "global"), None);
+        assert_eq!(VertexTarget::new("", "global"), None);
+        assert_eq!(VertexTarget::new("abcde", "global"), None);
+    }
+
+    #[test]
+    fn vertex_model_keeps_listed_and_replaces_the_rest() {
+        assert_eq!(VERTEX_MODELS.len(), 6);
+        for m in VERTEX_MODELS {
+            assert_eq!(vertex_model(m), *m);
+        }
+        for unknown in ["gemini-3.6-flash", "gemini-2.5-flash", "", "  ", "gemini-3.5-flash-lite-x", "GEMINI-3.5-FLASH"] {
+            assert_eq!(vertex_model(unknown), VERTEX_DEFAULT_MODEL, "{unknown:?}");
+        }
+        assert_eq!(vertex_model("models/gemini-3.5-flash"), "gemini-3.5-flash");
+        assert_eq!(vertex_model(" gemini-3.7-flash "), "gemini-3.7-flash");
+        assert_eq!(vertex_model(" models/gemini-3.8-flash "), "gemini-3.8-flash");
+        assert_eq!(vertex_model("models/gemini-3.6-flash"), VERTEX_DEFAULT_MODEL);
+        assert_eq!(VERTEX_DEFAULT_MODEL, "gemini-3.5-flash-lite");
+        assert!(VERTEX_MODELS.contains(&VERTEX_DEFAULT_MODEL));
+    }
+
+    #[test]
+    fn vertex_models_are_six_fast_first() {
+        let list = vertex_models();
+        let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "gemini-3.1-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.7-flash",
+                "gemini-3.8-flash",
+                "gemini-4-argon",
+            ]
+        );
+        assert!(list.iter().all(|m| m.display_name == m.id));
+        let argon = list.iter().find(|m| m.id == "gemini-4-argon").unwrap();
+        assert!(!argon.fast, "gemini-4-argon не flash и не lite");
+        assert_eq!(list.iter().filter(|m| m.fast).count(), 5);
+    }
+
+    #[test]
+    fn vertex_url_per_method() {
+        let t = VertexTarget::new("p-123456", "global").unwrap();
+        let base = "https://example.test/v1beta1";
+        let stream = "https://example.test/v1beta1/projects/p-123456/locations/global/publishers/google/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse";
+        assert_eq!(vertex_url(base, &t, "gemini-3.5-flash-lite", "streamGenerateContent"), stream);
+        assert_eq!(
+            vertex_url(base, &t, "gemini-3.5-flash-lite", "generateContent"),
+            "https://example.test/v1beta1/projects/p-123456/locations/global/publishers/google/models/gemini-3.5-flash-lite:generateContent"
+        );
+        assert_eq!(
+            vertex_url(base, &t, "gemini-3.5-flash-lite", "countTokens"),
+            "https://example.test/v1beta1/projects/p-123456/locations/global/publishers/google/models/gemini-3.5-flash-lite:countTokens"
+        );
+        assert_eq!(vertex_url("https://example.test/v1beta1/", &t, "gemini-3.5-flash-lite", "streamGenerateContent"), stream);
+        assert_eq!(vertex_url(base, &t, "models/gemini-3.5-flash-lite", "streamGenerateContent"), stream);
+        let eu = VertexTarget::new("p-123456", "europe-west1").unwrap();
+        assert!(vertex_url(base, &eu, "m", "countTokens").contains("/locations/europe-west1/"));
+        assert!(!stream.contains("key"), "ключа в адресе нет");
     }
 }

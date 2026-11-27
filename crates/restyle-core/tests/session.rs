@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use restyle_core::ai::gemini::VertexTarget;
 use restyle_core::ai::{AiError, BoxFuture, Provider, RewriteRequest};
 use restyle_core::capture::process::Foreground;
 use restyle_core::capture::text::LineEnding;
@@ -90,6 +91,8 @@ struct FakeSys {
     rewrites: Arc<AtomicUsize>,
     /// Что получила модель, по порядку запросов.
     requests: Arc<Mutex<Vec<RewriteRequest>>>,
+    /// Цель Vertex, которую сессия передала в `provider`, по порядку вызовов.
+    vertex_targets: Mutex<Vec<Option<VertexTarget>>>,
     masks: AtomicUsize,
 }
 
@@ -105,6 +108,7 @@ impl FakeSys {
             deepl_key: None,
             rewrites: Arc::default(),
             requests: Arc::default(),
+            vertex_targets: Mutex::default(),
             masks: AtomicUsize::new(0),
         }
     }
@@ -198,7 +202,8 @@ impl Platform for FakeSys {
     fn deepl_key(&self) -> Result<Option<String>, String> {
         Ok(self.deepl_key.clone())
     }
-    fn provider(&self, _model: &str) -> Box<dyn Provider> {
+    fn provider(&self, _model: &str, vertex: Option<VertexTarget>) -> Box<dyn Provider> {
+        self.vertex_targets.lock().unwrap().push(vertex);
         Box::new(FakeProvider(self.rewrites.clone(), self.requests.clone()))
     }
     fn translate(&self, _key: String, text: String, lang: String) -> BoxFuture<'static, Result<String, AiError>> {
@@ -310,6 +315,42 @@ async fn picking_a_model_style_streams_chunks() {
     assert_eq!(chunks.concat(), "hi!");
     assert_eq!(r.host.events("rewrite:done")[0]["text"], "hi!");
     assert_eq!(r.host.events("rewrite:start")[0]["styleId"], "polite");
+}
+
+#[tokio::test]
+async fn the_provider_gets_the_vertex_target_from_the_settings_snapshot() {
+    let settings = Settings {
+        vertex_project: "my-proj-1".into(),
+        vertex_location: "europe-west1".into(),
+        ..base_settings()
+    };
+    let r = rig_with(settings, FakeSys::new("hi"));
+    r.open().await;
+    r.pick("polite").await;
+    assert_eq!(
+        *r.sys.vertex_targets.lock().unwrap(),
+        vec![Some(VertexTarget { project: "my-proj-1".into(), location: "europe-west1".into() })]
+    );
+
+    // Проект меняется между запросами — следующий запрос видит новый.
+    *r.host.settings.lock().unwrap() =
+        Settings { vertex_project: "other-proj-2".into(), ..base_settings() };
+    r.pick("polite").await;
+    assert_eq!(
+        r.sys.vertex_targets.lock().unwrap()[1],
+        Some(VertexTarget { project: "other-proj-2".into(), location: "global".into() })
+    );
+}
+
+#[tokio::test]
+async fn without_a_valid_project_the_provider_gets_no_target() {
+    for project in ["", "Bad_Project", "abcde"] {
+        let settings = Settings { vertex_project: project.into(), ..base_settings() };
+        let r = rig_with(settings, FakeSys::new("hi"));
+        r.open().await;
+        r.pick("polite").await;
+        assert_eq!(*r.sys.vertex_targets.lock().unwrap(), vec![None], "{project:?}");
+    }
 }
 
 #[tokio::test]

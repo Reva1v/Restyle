@@ -236,6 +236,15 @@ IPC-команды, мастер, обновления и хук клавиат�
   публичный API ядра — только вместе с бампом `rev` у острова; ломающие правки формата `settings.json` /
   `history.json` запрещены (оба приложения читают одни файлы).
 
+## Vertex
+
+Ключ Gemini вида `AQ.…` — ключ Vertex AI (`ai::gemini::KeyKind::of`, регистр важен; остальное — AI Studio). Ему нужен проект GCP:
+`Settings.vertex_project` / `vertex_location` (умолчание `global`), `Settings::vertex_target()`; без проекта `rewrite` и
+`Gemini::check_key` отвечают `AiError::NoProject` до сети. Адрес `VERTEX_BASE_URL` (`RESTYLE_VERTEX_BASE_URL` — мок), модели из
+`VERTEX_MODELS` (недоступная подменяется на `VERTEX_DEFAULT_MODEL`), 403 → `AiError::NoRole`. Цель в провайдер приходит через
+`Platform::provider(model, vertex)` / `ai::provider_with`; `provider_for` без цели — приложение Restyle не менялось. Остров
+(Droplet Island) использует всё это; тесты — `tests/vertex.rs` (мок на loopback, `Gemini::with_bases`).
+
 ## Контракт IPC
 
 Источник правды — `src-tauri/src/ipc.rs` и `settings.rs`

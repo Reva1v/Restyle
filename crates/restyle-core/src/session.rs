@@ -36,6 +36,7 @@ use serde_json::value::RawValue;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::sync::oneshot;
 
+use crate::ai::gemini::VertexTarget;
 use crate::ai::{self, AiError, BoxFuture, Provider, RewriteRequest};
 use crate::capture::text::{apply_line_ending, matches_process};
 use crate::capture::{process::Foreground, CaptureError, CaptureHandle, CaptureOptions, CaptureResult, Captured, PasteMethod, PasteOptions, PasteResult, TextSource};
@@ -120,7 +121,8 @@ pub trait Platform: Send + Sync + 'static {
     fn gemini_key(&self) -> Result<Option<String>, String>;
     /// Ключ DeepL (блокирующий вызов, keyring).
     fn deepl_key(&self) -> Result<Option<String>, String>;
-    fn provider(&self, model: &str) -> Box<dyn Provider>;
+    /// Провайдер модели. `vertex` — проект GCP из настроек для ключей Vertex (`AQ.…`).
+    fn provider(&self, model: &str, vertex: Option<VertexTarget>) -> Box<dyn Provider>;
     fn translate(&self, key: String, text: String, target_lang: String) -> BoxFuture<'static, Result<String, AiError>>;
 }
 
@@ -173,8 +175,8 @@ impl Platform for WinPlatform {
     fn deepl_key(&self) -> Result<Option<String>, String> {
         secrets::get_deepl_key()
     }
-    fn provider(&self, model: &str) -> Box<dyn Provider> {
-        ai::provider_for(model)
+    fn provider(&self, model: &str, vertex: Option<VertexTarget>) -> Box<dyn Provider> {
+        ai::provider_with(model, vertex)
     }
     fn translate(&self, key: String, text: String, target_lang: String) -> BoxFuture<'static, Result<String, AiError>> {
         Box::pin(async move { translate::translate(&key, &text, &target_lang).await })
@@ -806,6 +808,8 @@ impl Control {
             req.text.chars().count()
         );
 
+        // Проект Vertex — из того же снимка настроек, что и модель.
+        let vertex = settings.vertex_target();
         let app = self.host.clone();
         let sys = self.sys.clone();
         let tx = self.tx.clone();
@@ -885,7 +889,7 @@ impl Control {
                     return;
                 }
             };
-            let provider = sys.provider(&req.model);
+            let provider = sys.provider(&req.model, vertex);
             if let Some((name, instruction)) = post {
                 if !deepl_translated {
                     // Первый проход — перевод моделью; куски пользователю не показываем.
